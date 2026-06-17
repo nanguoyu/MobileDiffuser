@@ -34,40 +34,11 @@ Hugging Face:
 
 [Wenwu2000/MobileDiffuser-SD3-medium](https://huggingface.co/Wenwu2000/MobileDiffuser-SD3-medium)
 
-The app can download these resources from its Settings panel after launch. For
-development, you may also place the compiled Core ML folders directly in the
-project root and add them to the Xcode target manually:
+The app downloads these resources from its Settings panel after launch using
+Swift networking against the Hugging Face API. Users do not need Python, pip,
+Git LFS, or the Hugging Face CLI.
 
-```text
-MobileDiffuser/
-  coremlsd3_2step/
-  coremlsd3_4step/
-  MobileDiffuser.xcodeproj
-  MobileDiffuser/
-  ml-stable-diffusion/
-```
-
-Manual download with Git LFS:
-
-```bash
-cd /path/to/MobileDiffuser
-git lfs install
-git clone https://huggingface.co/Wenwu2000/MobileDiffuser-SD3-medium /tmp/MobileDiffuser-SD3-medium
-cp -R /tmp/MobileDiffuser-SD3-medium/coremlsd3_2step .
-cp -R /tmp/MobileDiffuser-SD3-medium/coremlsd3_4step .
-```
-
-Or download only the folders you need with the Hugging Face CLI:
-
-```bash
-cd /path/to/MobileDiffuser
-pip install -U huggingface_hub
-hf download Wenwu2000/MobileDiffuser-SD3-medium \
-  --include "coremlsd3_2step/**" "coremlsd3_4step/**" \
-  --local-dir .
-```
-
-After downloading, confirm that these files exist:
+After in-app download, each local resource folder contains:
 
 ```text
 coremlsd3_2step/TextEncoder.mlmodelc
@@ -194,17 +165,7 @@ docs/
    or both 2-step and 4-step resources. The app stores downloaded resources in
    its Application Support directory and reuses them across launches.
 
-   You can still download the resources manually for development and add them
-   to the app target yourself:
-
-   ```bash
-   git lfs install
-   git clone https://huggingface.co/Wenwu2000/MobileDiffuser-SD3-medium /tmp/MobileDiffuser-SD3-medium
-   cp -R /tmp/MobileDiffuser-SD3-medium/coremlsd3_2step .
-   cp -R /tmp/MobileDiffuser-SD3-medium/coremlsd3_4step .
-   ```
-
-   Each folder must contain:
+   Each downloaded folder contains:
 
    ```text
    TextEncoder.mlmodelc

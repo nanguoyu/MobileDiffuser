@@ -111,6 +111,13 @@ where `v` is the velocity/noise prediction from MMDiT.
 
 `SD3PipelineLoader` resolves one resource folder based on the selected UI
 model. It checks for required resources before trying to build the pipeline.
+Downloaded resources in Application Support are preferred; bundled resources
+are only a development fallback.
+
+`ModelResourceManager` handles the in-app Settings download path. It uses Swift
+`URLSession` to read the Hugging Face repository tree API and downloads the
+selected Core ML resource folder directly on device. Users do not need Python,
+pip, Git LFS, or the Hugging Face CLI.
 
 The app currently validates the ANE path by using:
 
