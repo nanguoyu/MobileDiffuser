@@ -15,9 +15,13 @@ not contain model weights or compiled Core ML model bundles.
 
 ## Screenshots
 
+### Generated Images
+
 <p>
   <img src="docs/images/showcase-collage.jpg" alt="Actual MobileDiffuser SD3 Medium 4-step local generation samples">
 </p>
+
+### UI Design
 
 | SD3 Medium 4-step | SD3 Medium 2-step |
 | --- | --- |
