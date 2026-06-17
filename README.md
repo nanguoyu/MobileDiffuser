@@ -8,6 +8,68 @@ The repository contains the Swift app, a patched local copy of Apple's
 `ml-stable-diffusion` package, conversion scripts, and documentation. It does
 not contain model weights or compiled Core ML model bundles.
 
+## Screenshots
+
+| SD3 Medium 4-step | SD3 Medium 2-step |
+| --- | --- |
+| <img src="docs/images/sd3-4step-demo.jpg" alt="SD3 Medium 4-step dog generation demo" width="280"> | <img src="docs/images/sd3-2step-demo.jpg" alt="SD3 Medium 2-step dog generation demo" width="280"> |
+
+## Prebuilt Models
+
+Prebuilt Core ML resources and the source distilled checkpoints are hosted on
+Hugging Face:
+
+[Wenwu2000/MobileDiffuser-SD3-medium](https://huggingface.co/Wenwu2000/MobileDiffuser-SD3-medium)
+
+The app expects the compiled Core ML folders to sit directly in the project
+root:
+
+```text
+MobileDiffuser/
+  coremlsd3_2step/
+  coremlsd3_4step/
+  MobileDiffuser.xcodeproj
+  MobileDiffuser/
+  ml-stable-diffusion/
+```
+
+Download with Git LFS:
+
+```bash
+cd /path/to/MobileDiffuser
+git lfs install
+git clone https://huggingface.co/Wenwu2000/MobileDiffuser-SD3-medium /tmp/MobileDiffuser-SD3-medium
+cp -R /tmp/MobileDiffuser-SD3-medium/coremlsd3_2step .
+cp -R /tmp/MobileDiffuser-SD3-medium/coremlsd3_4step .
+```
+
+Or download only the folders you need with the Hugging Face CLI:
+
+```bash
+cd /path/to/MobileDiffuser
+pip install -U huggingface_hub
+hf download Wenwu2000/MobileDiffuser-SD3-medium \
+  --include "coremlsd3_2step/**" "coremlsd3_4step/**" \
+  --local-dir .
+```
+
+After downloading, confirm that these files exist:
+
+```text
+coremlsd3_2step/TextEncoder.mlmodelc
+coremlsd3_2step/TextEncoder2.mlmodelc
+coremlsd3_2step/VAEDecoder.mlmodelc
+coremlsd3_2step/MultiModalDiffusionTransformerStage0.mlmodelc
+
+coremlsd3_4step/TextEncoder.mlmodelc
+coremlsd3_4step/TextEncoder2.mlmodelc
+coremlsd3_4step/VAEDecoder.mlmodelc
+coremlsd3_4step/MultiModalDiffusionTransformerStage0.mlmodelc
+```
+
+The same Hugging Face repository also contains the source checkpoints under
+`checkpoints/` for users who want to reproduce or modify the Core ML conversion.
+
 ## Current Status
 
 - Model family: Stable Diffusion 3 Medium distilled checkpoints.
@@ -115,6 +177,15 @@ convert them locally.
    ```text
    coremlsd3_2step/
    coremlsd3_4step/
+   ```
+
+   The easiest path is to download the prebuilt resources from Hugging Face:
+
+   ```bash
+   git lfs install
+   git clone https://huggingface.co/Wenwu2000/MobileDiffuser-SD3-medium /tmp/MobileDiffuser-SD3-medium
+   cp -R /tmp/MobileDiffuser-SD3-medium/coremlsd3_2step .
+   cp -R /tmp/MobileDiffuser-SD3-medium/coremlsd3_4step .
    ```
 
    Each folder must contain:
