@@ -173,7 +173,17 @@ docs/
    coremlsd3_4step/
    ```
 
-   The easiest path is to download the prebuilt resources from Hugging Face:
+   Xcode runs `scripts/download_sd3_resources.sh` before copying app resources.
+   If these folders are missing, the script automatically downloads the
+   prebuilt Core ML resources from Hugging Face. Install either downloader first:
+
+   ```bash
+   pip install -U huggingface_hub
+   # or
+   brew install git-lfs
+   ```
+
+   You can also download the resources manually:
 
    ```bash
    git lfs install
@@ -199,6 +209,13 @@ docs/
 
    See [docs/REPRODUCING_MODELS.md](docs/REPRODUCING_MODELS.md) for the full
    conversion flow.
+
+   To disable build-time downloading, set this environment variable in the
+   Xcode scheme:
+
+   ```text
+   MOBILEDIFFUSER_SKIP_MODEL_DOWNLOAD=1
+   ```
 
 4. Open `MobileDiffuser.xcodeproj` in Xcode.
 

@@ -65,6 +65,7 @@
 			buildPhases = (
 				AABB14FF2F698F45007A3533 /* Sources */,
 				AABB15002F698F45007A3533 /* Frameworks */,
+				AADL00012FD000000079115C /* Download SD3 Resources */,
 				AABB15012F698F45007A3533 /* Resources */,
 			);
 			buildRules = (
@@ -130,6 +131,31 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		AADL00012FD000000079115C /* Download SD3 Resources */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(SRCROOT)/scripts/download_sd3_resources.sh",
+			);
+			name = "Download SD3 Resources";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(SRCROOT)/coremlsd3_2step",
+				"$(SRCROOT)/coremlsd3_4step",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "bash \"$SRCROOT/scripts/download_sd3_resources.sh\"\n";
+		};
+/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		AABB14FF2F698F45007A3533 /* Sources */ = {
