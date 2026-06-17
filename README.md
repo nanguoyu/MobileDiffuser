@@ -1,4 +1,9 @@
-# MobileDiffuser
+<h1>
+  <img src="MobileDiffuser/Assets.xcassets/AppIcon.appiconset/AppIcon.png" alt="MobileDiffuser app icon" width="64" align="left">
+  MobileDiffuser
+</h1>
+
+<br>
 
 MobileDiffuser is an experimental iOS app for running distilled Stable
 Diffusion 3 Medium locally on iPhone. The app targets 512 x 512 generation,
