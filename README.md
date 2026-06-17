@@ -122,23 +122,6 @@ docs/
   TECHNICAL_REPORT.md             Longer experiment report
 ```
 
-## What Is Not Committed
-
-The following files are local artifacts and should not be pushed:
-
-- `coremlsd3_2step/`
-- `coremlsd3_4step/`
-- `sd3_*_build*/`
-- `*.safetensors`
-- `*.ckpt`
-- `*.mlmodelc`
-- `*.mlpackage`
-- `.venv/`
-- Xcode `xcuserdata/`
-
-Users must obtain checkpoint files according to the original model license and
-convert them locally.
-
 ## Requirements
 
 ### For running the app
