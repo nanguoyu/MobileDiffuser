@@ -18,14 +18,14 @@ not contain model weights or compiled Core ML model bundles.
 ### Generated Images
 
 <p>
-  <img src="docs/images/showcase-collage.jpg" alt="Actual MobileDiffuser SD3 Medium 4-step local generation samples">
+  <img src="docs/images/showcase-collage.png" alt="Actual MobileDiffuser SD3 Medium 4-step local generation samples">
 </p>
 
 ### UI Design
 
 | SD3 Medium 4-step | SD3 Medium 2-step |
 | --- | --- |
-| <img src="docs/images/sd3-4step-demo.jpg" alt="SD3 Medium 4-step dog generation demo" width="280"> | <img src="docs/images/sd3-2step-demo.jpg" alt="SD3 Medium 2-step dog generation demo" width="280"> |
+| <img src="docs/images/sd3-4step-demo.png" alt="SD3 Medium 4-step dog generation demo" width="280"> | <img src="docs/images/sd3-2step-demo.png" alt="SD3 Medium 2-step dog generation demo" width="280"> |
 
 ## Prebuilt Models
 
