@@ -13,6 +13,11 @@ The repository contains the Swift app, a patched local copy of Apple's
 `ml-stable-diffusion` package, conversion scripts, and documentation. It does
 not contain model weights or compiled Core ML model bundles.
 
+Mobile diffusion deployment is an active research area, but many published
+systems do not release runnable mobile code. This project is open-sourced to
+make on-device SD3 deployment easier to inspect, reproduce, and extend for
+future researchers and builders.
+
 ## Screenshots
 
 ### Generated Images
@@ -71,6 +76,20 @@ The same Hugging Face repository also contains the source checkpoints under
 
 The resource folders are intentionally ignored by Git because each one is
 roughly 2.7 GB.
+
+## Performance
+
+Observed 512 x 512 generation times on iPhone 15 Pro with ANE-first execution:
+
+| Mode | Steps | Example generation time | Runtime memory after generation |
+| --- | ---: | ---: | ---: |
+| SD3 Medium 2-step | 2 | ~5.6 s | ~86 MB |
+| SD3 Medium 4-step | 4 | ~9.5 s | ~87 MB |
+
+These numbers are example measurements from local device testing. First use can
+take longer because the app may need to download model resources and Core ML may
+compile execution plans. Subsequent generations reuse the loaded pipeline when
+possible.
 
 ## Repository Layout
 
@@ -318,3 +337,19 @@ bundles. Share scripts, hashes, commands, and measurements instead.
 Code in this repository is intended to be released under the MIT License. Model
 weights and converted Core ML assets are subject to their original model
 licenses and are not included in this repository.
+
+## Citation
+
+If you use MobileDiffuser in your work, please cite:
+
+```bibtex
+@misc{tang2025mobilediffuser,
+  author       = {Wenwu Tang and Dong Wang and Olga Saukh},
+  title        = {MobileDiffuser: On-device Stable Diffusion 3 Medium on iPhone with Core ML},
+  year         = {2025},
+  publisher    = {GitHub},
+  journal      = {GitHub repository},
+  howpublished = {\url{https://github.com/TWWinde/MobileDiffuser}},
+  note         = {Accessed: 2026-06-19}
+}
+```
