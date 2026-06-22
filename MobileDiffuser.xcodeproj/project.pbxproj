@@ -7,7 +7,6 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		AABB15162F6995CE007A3533 /* StableDiffusion in Frameworks */ = {isa = PBXBuildFile; productRef = AABB15152F6995CE007A3533 /* StableDiffusion */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -27,7 +26,6 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				AABB15162F6995CE007A3533 /* StableDiffusion in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -70,7 +68,6 @@
 			);
 			name = MobileDiffuser;
 			packageProductDependencies = (
-				AABB15152F6995CE007A3533 /* StableDiffusion */,
 			);
 			productName = MobileDiffuser;
 			productReference = AABB15032F698F45007A3533 /* MobileDiffuser.app */;
@@ -101,7 +98,6 @@
 			mainGroup = AABB14FA2F698F44007A3533;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
-				AABB15142F6995CE007A3533 /* XCLocalSwiftPackageReference "ml-stable-diffusion" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = AABB15042F698F45007A3533 /* Products */;
@@ -336,20 +332,7 @@
 		};
 /* End XCConfigurationList section */
 
-/* Begin XCLocalSwiftPackageReference section */
-		AABB15142F6995CE007A3533 /* XCLocalSwiftPackageReference "ml-stable-diffusion" */ = {
-			isa = XCLocalSwiftPackageReference;
-			relativePath = "ml-stable-diffusion";
-		};
-/* End XCLocalSwiftPackageReference section */
 
-/* Begin XCSwiftPackageProductDependency section */
-		AABB15152F6995CE007A3533 /* StableDiffusion */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = AABB15142F6995CE007A3533 /* XCLocalSwiftPackageReference "ml-stable-diffusion" */;
-			productName = StableDiffusion;
-		};
-/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = AABB14FB2F698F44007A3533 /* Project object */;
 }
