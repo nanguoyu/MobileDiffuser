@@ -26,11 +26,16 @@ future researchers and builders.
   <img src="docs/images/showcase-collage.png" alt="Actual MobileDiffuser SD3 Medium 4-step local generation samples">
 </p>
 
-### UI Design
+### Demo Video
 
-| SD3 Medium 4-step | SD3 Medium 2-step |
-| --- | --- |
-| <img src="docs/images/sd3-4step-demo.png" alt="SD3 Medium 4-step dog generation demo" width="280"> | <img src="docs/images/sd3-2step-demo.png" alt="SD3 Medium 2-step dog generation demo" width="280"> |
+[![MobileDiffuser demo video](https://img.youtube.com/vi/m5wlOkeY5Bw/maxresdefault.jpg)](https://www.youtube.com/shorts/m5wlOkeY5Bw)
+
+### In-App Model Download
+
+The GitHub repository and the installed app do not directly include model
+weights or compiled Core ML bundles. After launch, open Settings and download
+the selected SD3 Medium resources into the app sandbox. The downloaded files
+are stored locally and reused across launches.
 
 ## Prebuilt Models
 
@@ -41,7 +46,8 @@ Hugging Face:
 
 The app downloads these resources from its Settings panel after launch using
 Swift networking against the Hugging Face API. Users do not need Python, pip,
-Git LFS, or the Hugging Face CLI.
+Git LFS, or the Hugging Face CLI. Model files are not downloaded during Xcode
+build and are not committed to this repository.
 
 After in-app download, each local resource folder contains:
 
