@@ -45,6 +45,7 @@ final class AppModel {
     private let downloader: ModelDownloader
     private var engine: (any DiffusionEngine)?
     private var loadedID: String?
+    private var inFlight = false   // reentrancy lock: one download/generate at a time
 
     init() {
         let support = try? FileManager.default.url(
@@ -81,12 +82,25 @@ final class AppModel {
 
     /// Explicit download of the selected Z-Image model (no-op for self-managing families).
     func download() async {
+        guard !inFlight else { return }
+        inFlight = true; defer { inFlight = false }
+        await downloadSelected()
+    }
+
+    func generate() async {
+        guard !inFlight else { return }
+        inFlight = true; defer { inFlight = false }
+        await runGenerate()
+    }
+
+    /// Download the selected Z-Image weights. No reentrancy guard — callers hold `inFlight`.
+    private func downloadSelected() async {
         guard selected.family == .zImage else { return }
         let repo = selected.variants[0].source.huggingFaceRepo
         do {
             phase = .downloading(0)
             _ = try await downloader.download(repoId: repo) { fraction in
-                Task { @MainActor in self.phase = .downloading(fraction) }
+                Task { @MainActor in if case .downloading = self.phase { self.phase = .downloading(fraction) } }
             }
             phase = .idle
         } catch {
@@ -94,23 +108,32 @@ final class AppModel {
         }
     }
 
-    func generate() async {
+    private func runGenerate() async {
         let model = selected
         do {
             // Z-Image needs its weights on disk before the engine can load them.
-            if model.family == .zImage, !isDownloaded { await download(); guard isDownloaded else { return } }
+            if model.family == .zImage, !isDownloaded {
+                await downloadSelected()
+                guard isDownloaded else { return }
+            }
 
             if engine == nil || loadedID != model.id {
+                // Unload the previous engine BEFORE loading the new one, so two large weight sets
+                // are never resident at once (a model switch would otherwise peak ~10+ GB).
+                if let previous = engine {
+                    engine = nil; loadedID = nil
+                    await previous.unload()
+                }
                 let built = try makeEngine(for: model)
                 phase = .loading(0)
                 try await built.load(model, variant: model.variants[0], source: SafetensorsWeightSource(tensors: [:])) { fraction in
-                    Task { @MainActor in self.phase = .loading(fraction) }
+                    Task { @MainActor in if case .loading = self.phase { self.phase = .loading(fraction) } }
                 }
-                if let previous = engine { await previous.unload() }
                 engine = built
                 loadedID = model.id
             }
-            guard let engine else { return }
+            // Ensure the loaded engine is actually the selected model (a failed switch leaves none).
+            guard let engine, loadedID == model.id else { phase = .failed("Model not loaded"); return }
 
             phase = .generating(0, steps)
             let request = GenerationRequest(prompt: prompt, steps: steps,
@@ -118,7 +141,10 @@ final class AppModel {
                                             size: ImageSize(width: size, height: size))
             let cgImage = try await engine.generate(request) { progress in
                 Task { @MainActor in
-                    if case .denoising(let step, let total, _) = progress { self.phase = .generating(step, total) }
+                    // Only advance while still generating, so a late callback can't revive a finished run.
+                    if case .denoising(let step, let total, _) = progress, case .generating = self.phase {
+                        self.phase = .generating(step, total)
+                    }
                 }
             }
             image = cgImage

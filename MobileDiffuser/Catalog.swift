@@ -5,8 +5,9 @@
 import DiffusionCore
 
 /// The built-in model catalog. Z-Image runs everywhere (downloaded in-app via `ModelDownloader`);
-/// FLUX.2 is macOS-only (the `flux-2-swift-mlx` pipeline is macOS-15 + monolithic and self-downloads
-/// on first run), so its entry is compiled in only on macOS.
+/// FLUX.2 is macOS-only (the `flux-2-swift-mlx` pipeline is monolithic and self-downloads on first
+/// run; macOS 15 today — its profiler dependency forces 15, see notes), so its entry is compiled in
+/// only on macOS.
 enum Catalog {
     static let zImageTurbo = DiffusionModel(
         id: "z-image-turbo-q4",
@@ -36,7 +37,7 @@ enum Catalog {
         variants: [ModelVariant(precision: .q4, approximateBytes: 4_600_000_000,
             components: ComponentSizes(transformer: 2_180_000_000, textEncoder: 2_260_000_000, vae: 170_000_000),
             layout: .quantoInt,
-            source: ModelSource(huggingFaceRepo: "black-forest-labs/FLUX.2-Klein"))])
+            source: ModelSource(huggingFaceRepo: "black-forest-labs/FLUX.2-klein-4B"))])
     #endif
 
     static var all: [DiffusionModel] {
