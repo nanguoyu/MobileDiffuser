@@ -24,6 +24,31 @@ struct ModelsView: View {
     }
 }
 
+/// Model management presented as a sheet — from the Create toolbar / model bar and from Settings.
+/// Wraps `ModelsView` with a title bar and a Done button.
+struct ModelsSheet: View {
+    @Bindable var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            ModelsView(model: model)
+                .navigationTitle("Models")
+                #if os(iOS)
+                .navigationBarTitleDisplayMode(.inline)
+                #endif
+                .toolbar {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Done") { dismiss() }
+                    }
+                }
+        }
+        #if os(macOS)
+        .frame(minWidth: 540, minHeight: 600)
+        #endif
+    }
+}
+
 /// A single model card: title, fit badge, summary, family/precision/size chips, component bar,
 /// and the install/use action.
 struct ModelCard: View {
@@ -69,6 +94,7 @@ struct ModelCard: View {
 struct ModelAction: View {
     @Bindable var model: AppModel
     let m: DiffusionModel
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         let isThis = model.selectedID == m.id
@@ -82,7 +108,7 @@ struct ModelAction: View {
             .accessibilityValue("\(Int(f * 100)) percent")
         } else if model.isDownloaded(m) || (m.family != .zImage) {
             Button {
-                model.selectedID = m.id; model.tab = .create
+                model.selectedID = m.id; dismiss()   // pick this model and return to Create
             } label: {
                 Label(m.family == .zImage ? "Use" : "Use (downloads on first run)", systemImage: "wand.and.stars")
             }
@@ -131,12 +157,23 @@ private struct ModelDetail: View {
                     row("VAE", ByteCountFormatter.string(fromByteCount: v.components.vae, countStyle: .file))
                 }.studioCard()
 
-                if item.family == .zImage && !model.isDownloaded(item) {
+                if model.selectedID == item.id, case .downloading(let f) = model.phase {
+                    // Mirror the card's progress state so the detail reflects an in-flight download.
+                    VStack(spacing: Theme.Space.xs) {
+                        ProgressView(value: f).tint(Theme.accent)
+                        Text("Downloading… \(Int(f * 100))%")
+                            .font(.caption).monospacedDigit().foregroundStyle(Theme.textSecondary)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("Downloading")
+                    .accessibilityValue("\(Int(f * 100)) percent")
+                } else if item.family == .zImage && !model.isDownloaded(item) {
                     Button { model.selectedID = item.id; Task { await model.download() } } label: {
                         Label("Download", systemImage: "arrow.down.circle").frame(maxWidth: .infinity)
                     }.buttonStyle(StudioButtonStyle(.primary)).disabled(model.isBusy)
                 } else {
-                    Button { model.selectedID = item.id; model.tab = .create; dismiss() } label: {
+                    Button { model.selectedID = item.id; dismiss() } label: {
                         Label("Use in Create", systemImage: "wand.and.stars").frame(maxWidth: .infinity)
                     }.buttonStyle(StudioButtonStyle(.primary))
                 }

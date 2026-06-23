@@ -7,6 +7,7 @@ import SwiftUI
 /// Generation workspace: a full-bleed result canvas above a prompt + controls panel.
 struct CreateView: View {
     @Bindable var model: AppModel
+    @State private var showModels = false
 
     var body: some View {
         ZStack {
@@ -17,10 +18,19 @@ struct CreateView: View {
                 PromptBar(model: model)
             }
         }
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button { showModels = true } label: {
+                    Image(systemName: "gearshape")
+                }
+                .accessibilityLabel("Manage models")
+            }
+        }
+        .sheet(isPresented: $showModels) { ModelsSheet(model: model) }
     }
 
     private var modelBar: some View {
-        Button { model.tab = .models } label: {
+        Button { showModels = true } label: {
             HStack(spacing: Theme.Space.sm) {
                 Image(systemName: "cube.box.fill").foregroundStyle(Theme.accent)
                 Text(model.selected.displayName)
@@ -36,7 +46,7 @@ struct CreateView: View {
         }
         .buttonStyle(.plain)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Selected model: \(model.selected.displayName), \(model.statusText). Opens model gallery.")
+        .accessibilityLabel("Selected model: \(model.selected.displayName), \(model.statusText). Opens model management.")
         .accessibilityAddTraits(.isButton)
     }
 }
@@ -141,14 +151,33 @@ struct PromptBar: View {
                 .accessibilityLabel("Generate")
                 .accessibilityHint("Creates an image from your prompt")
             }
-            HStack(spacing: Theme.Space.sm) {
-                Segmented(selection: $model.size, options: [512, 768, 1024]) { "\($0)" }
-                Segmented(selection: $model.steps, options: [4, 8, 16]) { "\($0)" }
-                SeedField(text: $model.seedText)
+            HStack(alignment: .bottom, spacing: Theme.Space.lg) {
+                labeledControl("Size") {
+                    Segmented(selection: $model.size, options: [512, 768, 1024]) { "\($0)" }
+                }
+                labeledControl("Steps") {
+                    Segmented(selection: $model.steps, options: [4, 8, 16]) { "\($0)" }
+                }
+                labeledControl("Seed") {
+                    SeedField(text: $model.seedText)
+                }
+                .frame(maxWidth: 120)
             }
         }
+        // Compose the workspace on wide Macs: cap content to the canvas width, centered,
+        // while the surface bar still spans edge to edge.
+        .frame(maxWidth: 880)
         .padding(Theme.Space.lg)
+        .frame(maxWidth: .infinity)
         .background(Theme.surface)
         .overlay(alignment: .top) { Divider().background(Theme.hairline) }
+    }
+
+    /// A control with a small caption above it (Size / Steps / Seed).
+    @ViewBuilder private func labeledControl<C: View>(_ title: String, @ViewBuilder _ content: () -> C) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title).font(.caption2).foregroundStyle(Theme.textTertiary)
+            content()
+        }
     }
 }

@@ -15,18 +15,31 @@ import UIKit
 import Photos
 #endif
 
-/// The four studio sections (Mac sidebar / iPhone tab bar).
+/// The three studio sections (Mac sidebar / iPhone tab bar). Model management lives in Settings
+/// and is also reachable from the Create toolbar, so it is not a top-level section.
 enum Tab: String, CaseIterable, Identifiable {
-    case models, create, library, settings
+    case create, library, settings
     var id: String { rawValue }
     var title: String {
-        switch self { case .models: "Models"; case .create: "Create"; case .library: "Library"; case .settings: "Settings" }
+        switch self { case .create: "Create"; case .library: "Library"; case .settings: "Settings" }
     }
     var icon: String {
         switch self {
-        case .models: "square.grid.2x2"; case .create: "wand.and.stars"
+        case .create: "wand.and.stars"
         case .library: "photo.on.rectangle.angled"; case .settings: "gearshape"
         }
+    }
+}
+
+/// In-app appearance override. `.system` follows the device; the others force a scheme.
+enum AppTheme: String, CaseIterable, Identifiable {
+    case system, light, dark
+    var id: String { rawValue }
+    var label: String {
+        switch self { case .system: "System"; case .light: "Light"; case .dark: "Dark" }
+    }
+    var colorScheme: ColorScheme? {
+        switch self { case .system: nil; case .light: .light; case .dark: .dark }
     }
 }
 
@@ -78,6 +91,11 @@ final class AppModel {
     var image: CGImage?
     var history: [Generation] = []
 
+    /// In-app appearance override, persisted across launches (defaults to following the system).
+    var appearance: AppTheme = .system {
+        didSet { UserDefaults.standard.set(appearance.rawValue, forKey: "appearance") }
+    }
+
     private let downloader: ModelDownloader
     private var engine: (any DiffusionEngine)?
     private var loadedID: String?
@@ -88,6 +106,9 @@ final class AppModel {
             for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
         let base = (support ?? URL(fileURLWithPath: NSTemporaryDirectory())).appending(component: "MobileDiffuser")
         downloader = ModelDownloader(downloadBase: base)
+        if let raw = UserDefaults.standard.string(forKey: "appearance"), let theme = AppTheme(rawValue: raw) {
+            appearance = theme   // set in init: didSet does not fire, so no redundant write-back
+        }
     }
 
     var selected: DiffusionModel { models.first { $0.id == selectedID } ?? models[0] }
@@ -218,6 +239,24 @@ final class AppModel {
     func isDownloaded(_ model: DiffusionModel) -> Bool {
         guard model.family == .zImage else { return false }
         return downloader.isDownloaded(repoId: model.variants[0].source.huggingFaceRepo)
+    }
+
+    /// How many catalog models have weights on disk (shown in Settings).
+    var downloadedModelCount: Int { models.filter { isDownloaded($0) }.count }
+
+    /// Total on-disk size of downloaded model weights, walked off the main actor.
+    func storageUsedBytes() async -> Int64 {
+        let dir = downloader.downloadBase.appending(component: "models")
+        return await Task.detached {
+            guard let walker = FileManager.default.enumerator(
+                at: dir, includingPropertiesForKeys: [.totalFileAllocatedSizeKey]) else { return Int64(0) }
+            var total: Int64 = 0
+            for case let url as URL in walker {
+                let size = (try? url.resourceValues(forKeys: [.totalFileAllocatedSizeKey]))?.totalFileAllocatedSize
+                total += Int64(size ?? 0)
+            }
+            return total
+        }.value
     }
 
     /// Apply a past generation's settings and jump to Create.

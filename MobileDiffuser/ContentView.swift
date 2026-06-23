@@ -4,12 +4,21 @@
 
 import SwiftUI
 
-/// Creative-studio shell: four sections (Models / Create / Library / Settings) as a tab bar on iOS
-/// and a sidebar split on macOS, all sharing one `AppModel`. Follows the system light/dark scheme.
+/// Creative-studio shell: three sections (Create / Library / Settings) as a tab bar on iOS and a
+/// sidebar split on macOS, all sharing one `AppModel`. Respects the in-app appearance override
+/// (which defaults to following the system scheme). Model management lives in Settings + the Create
+/// toolbar, not as a top-level section.
 struct ContentView: View {
     @State private var model = AppModel()
 
     var body: some View {
+        shell
+            .tint(Theme.accent)
+            .background(Theme.bg)
+            .preferredColorScheme(model.appearance.colorScheme)
+    }
+
+    @ViewBuilder private var shell: some View {
         #if os(macOS)
         NavigationSplitView {
             List(Tab.allCases, selection: $model.tab) { tab in
@@ -21,8 +30,6 @@ struct ContentView: View {
             screen(for: model.tab)
                 .frame(minWidth: 560, minHeight: 480)
         }
-        .tint(Theme.accent)
-        .background(Theme.bg)
         #else
         TabView(selection: $model.tab) {
             ForEach(Tab.allCases) { tab in
@@ -31,14 +38,11 @@ struct ContentView: View {
                     .tag(tab)
             }
         }
-        .tint(Theme.accent)
-        .background(Theme.bg)
         #endif
     }
 
     @ViewBuilder private func screen(for tab: Tab) -> some View {
         switch tab {
-        case .models: ModelsView(model: model)
         case .create: CreateView(model: model)
         case .library: LibraryView(model: model)
         case .settings: SettingsView(model: model)

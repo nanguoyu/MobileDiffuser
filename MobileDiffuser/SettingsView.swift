@@ -4,19 +4,20 @@
 
 import SwiftUI
 
-/// Read-only studio settings: where weights live, what this device can do, how the app looks, and
-/// what powers it. No mutable state — the OS drives light/dark, so there is no in-app appearance
-/// toggle. Every value is sourced from `AppModel` / `DeviceTier`; no row is invented.
+/// Studio settings: manage models, pick the appearance, see storage + device info, and what powers
+/// the app. Models, appearance, and storage usage are interactive; device + about are informational.
 struct SettingsView: View {
     @Bindable var model: AppModel
-    @Environment(\.colorScheme) private var colorScheme
+    @State private var showModels = false
+    @State private var usedBytes: Int64 = 0
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: Theme.Space.xl) {
+                modelsSection
+                appearanceSection
                 storageSection
                 deviceSection
-                appearanceSection
                 aboutSection
             }
             .frame(maxWidth: 640, alignment: .leading)   // keep readable on wide Mac detail panes
@@ -24,13 +25,37 @@ struct SettingsView: View {
             .padding(Theme.Space.xl)
         }
         .background(Theme.bg)
+        .task(id: showModels) { usedBytes = await model.storageUsedBytes() }
+        .sheet(isPresented: $showModels) { ModelsSheet(model: model) }
     }
 
     // MARK: Sections
 
+    private var modelsSection: some View {
+        section("Models", icon: "square.stack.3d.up") {
+            row("Installed", "\(model.downloadedModelCount) of \(model.models.count)")
+            Button { showModels = true } label: {
+                Label("Manage models", systemImage: "slider.horizontal.3").frame(maxWidth: .infinity)
+            }
+            .buttonStyle(StudioButtonStyle(.secondary))
+            .accessibilityHint("Download, switch, and inspect models")
+        }
+    }
+
+    private var appearanceSection: some View {
+        section("Appearance", icon: "circle.lefthalf.filled") {
+            Segmented(selection: $model.appearance, options: AppTheme.allCases) { $0.label }
+                .accessibilityLabel("Theme")
+            Text("System follows your device’s light/dark setting.")
+                .font(.caption)
+                .foregroundStyle(Theme.textTertiary)
+        }
+    }
+
     private var storageSection: some View {
         section("Storage", icon: "internaldrive") {
-            row("Downloaded models", model.storageLocation, mono: true)
+            row("Models on disk", ByteCountFormatter.string(fromByteCount: usedBytes, countStyle: .file))
+            row("Location", model.storageLocation, mono: true)
             Text("Z-Image weights download here on first use. FLUX.2 manages its own weights inside the engine on macOS.")
                 .font(.caption)
                 .foregroundStyle(Theme.textTertiary)
@@ -48,15 +73,6 @@ struct SettingsView: View {
         }
     }
 
-    private var appearanceSection: some View {
-        section("Appearance", icon: "circle.lefthalf.filled") {
-            row("Theme", colorScheme == .dark ? "Dark" : "Light")
-            Text("MobileDiffuser follows your system appearance. Change it in \(systemSettingsName) to switch themes.")
-                .font(.caption)
-                .foregroundStyle(Theme.textTertiary)
-        }
-    }
-
     private var aboutSection: some View {
         section("About", icon: "info.circle") {
             row("Engine", "Pure Swift + MLX")
@@ -65,14 +81,6 @@ struct SettingsView: View {
                 .font(.caption)
                 .foregroundStyle(Theme.textTertiary)
         }
-    }
-
-    private var systemSettingsName: String {
-        #if os(macOS)
-        "System Settings › Appearance"
-        #else
-        "Settings › Display & Brightness"
-        #endif
     }
 
     // MARK: Building blocks
@@ -89,7 +97,7 @@ struct SettingsView: View {
             .foregroundStyle(Theme.textTertiary)
             .accessibilityAddTraits(.isHeader)
 
-            VStack(alignment: .leading, spacing: Theme.Space.sm) { content() }
+            VStack(alignment: .leading, spacing: Theme.Space.md) { content() }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .studioCard()
         }
