@@ -90,6 +90,8 @@ final class AppModel {
     var phase: Phase = .idle
     var image: CGImage?
     var history: [Generation] = []
+    /// Bumped after any model/component download or delete so views re-read on-disk install state.
+    private(set) var componentsRevision = 0
 
     /// In-app appearance override, persisted across launches (defaults to following the system).
     var appearance: AppTheme = .system {
@@ -116,8 +118,6 @@ final class AppModel {
         if let urlError = error as? URLError, urlError.code == .notConnectedToInternet { return "No connection" }
         return "Download failed"
     }
-    /// Bumped after a component download/delete so views re-read the on-disk component list.
-    private(set) var componentsRevision = 0
 
     /// The individually-managed FLUX components and their current on-disk state.
     func fluxComponents() -> [Flux2FacadeEngine.Flux2ComponentInfo] { Flux2FacadeEngine.allComponents() }
@@ -242,9 +242,7 @@ final class AppModel {
         guard !inFlight else { return }
         inFlight = true; defer { inFlight = false }
         await downloadSelected()
-        #if os(macOS)
         componentsRevision += 1   // model-level download changed the on-disk component set
-        #endif
     }
 
     func generate() async {
@@ -274,9 +272,102 @@ final class AppModel {
             break
         }
         phase = .idle
-        #if os(macOS)
         componentsRevision += 1   // model-level delete changed the on-disk component set
+
+    }
+
+    // MARK: - Unified model recipe (one UI-facing shape for every family)
+
+    /// Build a `ModelRecipe` for a model — its components (on-disk + active state) and precision axes —
+    /// so the detail screen renders one data-driven template regardless of family.
+    func recipe(for model: DiffusionModel) -> ModelRecipe {
+        switch model.family {
+        case .zImage:
+            let v = model.variants[0]
+            let comp = RecipeComponent(
+                id: "zimage", title: "\(model.displayName) · \(v.precision.label)",
+                subtitle: model.summary, kind: .weights,
+                repo: v.source.huggingFaceRepo, bytes: v.approximateBytes,
+                isDownloaded: isDownloaded(model), isActive: true)
+            return ModelRecipe(axes: [], components: [comp])
+        case .flux2:
+            #if os(macOS)
+            _ = componentsRevision   // re-read the on-disk list when it changes
+            let active = Set(fluxActiveComponentIDs)
+            let comps: [RecipeComponent] = fluxComponents().map { c in
+                let kind: RecipeComponent.Kind = {
+                    switch c.kind { case .transformer: return .transformer
+                    case .textEncoder: return .textEncoder; case .vae: return .vae }
+                }()
+                return RecipeComponent(id: c.id, title: c.title, subtitle: c.subtitle, kind: kind,
+                                       repo: c.repo, bytes: c.bytes, isDownloaded: c.isDownloaded,
+                                       isActive: active.contains(c.id))
+            }
+            let axes: [PrecisionAxis] = [
+                PrecisionAxis(id: "transformer", title: "Model precision",
+                    options: Flux2FacadeEngine.FluxTransformerPrecision.allCases.map {
+                        PrecisionOption(id: $0.rawValue, label: $0.label, note: $0.note) },
+                    selectedID: fluxTransformer.rawValue),
+                PrecisionAxis(id: "encoder", title: "Text encoder",
+                    options: Flux2FacadeEngine.FluxEncoderPrecision.allCases.map {
+                        PrecisionOption(id: $0.rawValue, label: $0.label, note: $0.note) },
+                    selectedID: fluxEncoder.rawValue),
+            ]
+            return ModelRecipe(axes: axes, components: comps)
+            #else
+            return ModelRecipe()
+            #endif
+        default:
+            return ModelRecipe()
+        }
+    }
+
+    /// Apply a precision-axis choice (FLUX only today).
+    func setPrecision(axisID: String, optionID: String) {
+        #if os(macOS)
+        if axisID == "transformer", let v = Flux2FacadeEngine.FluxTransformerPrecision(rawValue: optionID) { fluxTransformer = v }
+        if axisID == "encoder", let v = Flux2FacadeEngine.FluxEncoderPrecision(rawValue: optionID) { fluxEncoder = v }
         #endif
+    }
+
+    /// 0...1 progress for a component currently installing (nil if it isn't).
+    func componentProgress(_ id: String, model: DiffusionModel) -> Double? {
+        #if os(macOS)
+        if model.family == .flux2, fluxComponentDownloadID == id { return fluxComponentFraction }
+        #endif
+        if model.family == .zImage, id == "zimage", selectedID == model.id,
+           case .downloading(let f) = phase { return f }
+        return nil
+    }
+
+    /// A friendly error for a component whose last install failed (nil otherwise).
+    func componentErrorMessage(_ id: String) -> String? {
+        #if os(macOS)
+        if fluxComponentError?.id == id { return fluxComponentError?.message }
+        #endif
+        return nil
+    }
+
+    /// Install one recipe component.
+    func installComponent(_ id: String, model: DiffusionModel) async {
+        #if os(macOS)
+        if model.family == .flux2 { await downloadFluxComponent(id); return }
+        #endif
+        if model.family == .zImage { selectedID = model.id; await download() }
+    }
+
+    /// Remove one recipe component.
+    func removeComponent(_ id: String, model: DiffusionModel) async {
+        #if os(macOS)
+        if model.family == .flux2 { await deleteFluxComponent(id); return }
+        #endif
+        if model.family == .zImage { await delete(model) }
+    }
+
+    /// Download all missing active components for a model (the model-level "Download" action).
+    func installRecipe(_ model: DiffusionModel) async {
+        selectedID = model.id
+        await download()
     }
 
     /// Download the selected model's weights. No reentrancy guard — callers hold `inFlight`.

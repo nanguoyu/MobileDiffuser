@@ -4,9 +4,8 @@
 
 import SwiftUI
 import DiffusionCore
-import AppEngines   // re-exports Flux2DiffusionEngine on macOS (precision enums); empty on iOS
 
-/// Download center: family cards with precision chips, hardware-fit badges, and install/use.
+/// Download center: model cards with precision chips, hardware-fit badges, and install/use.
 struct ModelsView: View {
     @Bindable var model: AppModel
     @State private var detail: DiffusionModel?
@@ -31,7 +30,6 @@ struct ModelsView: View {
 }
 
 /// Model management presented as a sheet — from the Create toolbar / model bar and from Settings.
-/// Wraps `ModelsView` with a title bar and a Done button.
 struct ModelsSheet: View {
     @Bindable var model: AppModel
     @Environment(\.dismiss) private var dismiss
@@ -44,9 +42,7 @@ struct ModelsSheet: View {
                 .navigationBarTitleDisplayMode(.inline)
                 #endif
                 .toolbar {
-                    ToolbarItem(placement: .confirmationAction) {
-                        Button("Done") { dismiss() }
-                    }
+                    ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
                 }
         }
         .tint(Theme.accent)
@@ -56,8 +52,8 @@ struct ModelsSheet: View {
     }
 }
 
-/// A single model card: title, fit badge, summary, family/precision/size chips, component bar,
-/// and the install/use action.
+/// A single model card: title, fit badge, summary, family/precision/size chips, install state.
+/// Recipe-driven, so every family renders the same anatomy.
 struct ModelCard: View {
     @Bindable var model: AppModel
     let m: DiffusionModel
@@ -66,10 +62,9 @@ struct ModelCard: View {
     private var selected: Bool { model.selectedID == m.id }
 
     var body: some View {
+        let _ = model.componentsRevision   // re-render when on-disk install state changes
+        let recipe = model.recipe(for: m)
         VStack(alignment: .leading, spacing: Theme.Space.sm) {
-            #if os(macOS)
-            let _ = model.componentsRevision   // re-render when the on-disk component set changes
-            #endif
             HStack {
                 Text(m.displayName).font(.headline).foregroundStyle(Theme.textPrimary)
                 Spacer()
@@ -79,33 +74,11 @@ struct ModelCard: View {
                 .font(.caption).foregroundStyle(Theme.textSecondary).lineLimit(2)
             HStack(spacing: Theme.Space.xs) {
                 Chip(text: m.family == .flux2 ? "FLUX.2" : "Z-Image")
-                #if os(macOS)
-                if m.family == .flux2 {
-                    Chip(text: model.fluxTransformer.label, filled: true)
-                    Chip(text: ByteCountFormatter.string(fromByteCount: model.fluxActiveBytes, countStyle: .file))
-                } else {
-                    Chip(text: m.variants[0].precision.label, filled: true)
-                    Chip(text: ByteCountFormatter.string(fromByteCount: m.variants[0].approximateBytes, countStyle: .file))
-                }
-                #else
-                Chip(text: m.variants[0].precision.label, filled: true)
-                Chip(text: ByteCountFormatter.string(fromByteCount: m.variants[0].approximateBytes, countStyle: .file))
-                #endif
+                Chip(text: recipe.axes.first?.selectedOption?.label ?? m.variants[0].precision.label, filled: true)
+                Chip(text: ByteCountFormatter.string(fromByteCount: recipe.activeBytes, countStyle: .file))
                 Spacer()
             }
-            #if os(macOS)
-            if m.family == .flux2 {
-                // The active recipe + a tri-state install status, so the Use/Download action is clear.
-                let missing = model.fluxMissingCount
-                let total = model.fluxActiveCount
-                let status = missing == 0 ? "installed"
-                    : (missing == total ? "not installed" : "\(missing) of \(total) missing")
-                let color: Color = missing == 0 ? Theme.fitGreen
-                    : (missing == total ? Theme.textTertiary : Theme.fitAmber)
-                Text("Active: \(model.fluxRecipeLabel) · \(status)")
-                    .font(.caption2).foregroundStyle(color)
-            }
-            #endif
+            installStatus(recipe)
             ComponentBar(components: m.variants[0].components)
             HStack(spacing: Theme.Space.sm) {
                 ModelAction(model: model, m: m)
@@ -120,226 +93,185 @@ struct ModelCard: View {
         .contentShape(Rectangle())
         .onTapGesture { withAnimation(Motion.select) { model.selectedID = m.id } }
     }
+
+    /// Tri-state install line: prefixed with the active recipe when the model has precision axes.
+    @ViewBuilder private func installStatus(_ recipe: ModelRecipe) -> some View {
+        let missing = recipe.missing.count
+        let total = recipe.activeCount
+        if total > 0 {
+            let status = missing == 0 ? "installed"
+                : (missing == total ? "not installed" : "\(missing) of \(total) missing")
+            let color: Color = missing == 0 ? Theme.fitGreen
+                : (missing == total ? Theme.textTertiary : Theme.fitAmber)
+            let recipeText = recipe.axes.map { $0.selectedOption?.label ?? "" }.joined(separator: " · ")
+            Text(recipe.axes.isEmpty ? status : "\(recipeText) · \(status)")
+                .font(.caption2).foregroundStyle(color)
+        }
+    }
 }
 
-/// The card's install/use control. Re-tapping after a failure retries (the control re-enables when
-/// the phase leaves `.downloading`).
+/// The card's install/use control. Use when installed, otherwise a self-describing Download.
 struct ModelAction: View {
     @Bindable var model: AppModel
     let m: DiffusionModel
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        let isThis = model.selectedID == m.id
-        if isThis, case .downloading(let f) = model.phase {
+        let recipe = model.recipe(for: m)
+        if model.selectedID == m.id, case .downloading(let f) = model.phase {
             HStack(spacing: Theme.Space.xs) {
                 ProgressView(value: f).frame(width: 90).tint(Theme.accent)
                 Text("\(Int(f * 100))%").font(.caption2).monospacedDigit().foregroundStyle(Theme.textSecondary)
             }
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel("Downloading")
-            .accessibilityValue("\(Int(f * 100)) percent")
-        } else if model.isDownloaded(m) {
-            Button {
-                model.selectedID = m.id; dismiss()   // pick this model and return to Create
-            } label: {
+            .accessibilityLabel("Downloading").accessibilityValue("\(Int(f * 100)) percent")
+        } else if recipe.isInstalled {
+            Button { model.selectedID = m.id; dismiss() } label: {
                 Label("Use", systemImage: "wand.and.stars")
             }
             .buttonStyle(StudioButtonStyle(.primary))
         } else {
-            Button {
-                model.selectedID = m.id; Task { await model.download() }
-            } label: {
-                #if os(macOS)
-                Label(m.family == .flux2 ? model.fluxDownloadActionLabel : "Download", systemImage: "arrow.down.circle")
-                #else
-                Label("Download", systemImage: "arrow.down.circle")
-                #endif
+            Button { Task { await model.installRecipe(m) } } label: {
+                Label(downloadLabel(recipe), systemImage: "arrow.down.circle")
             }
             .buttonStyle(StudioButtonStyle(.secondary)).disabled(model.isBusy)
         }
     }
+
+    private func downloadLabel(_ recipe: ModelRecipe) -> String {
+        let bytes = ByteCountFormatter.string(fromByteCount: recipe.missingBytes, countStyle: .file)
+        return recipe.missing.count < recipe.activeCount ? "Complete · \(bytes)" : "Download · \(bytes)"
+    }
 }
 
-/// Model detail: variant table, component breakdown, fit, install.
+/// One data-driven detail template for every model: header, fit, optional precision axes, a
+/// per-component install/delete list, and a footer (Use / download-all / remove-all).
 private struct ModelDetail: View {
     @Bindable var model: AppModel
     let item: DiffusionModel
     @Environment(\.dismiss) private var dismiss
-    @State private var confirmDelete = false
+    @State private var confirmRemoveAll = false
+    @State private var pendingDelete: RecipeComponent?
+
+    private var isDownloadingModel: Bool {
+        if model.selectedID == item.id, case .downloading = model.phase { return true }
+        return false
+    }
 
     var body: some View {
+        let _ = model.componentsRevision
+        let recipe = model.recipe(for: item)
         ScrollView {
             VStack(alignment: .leading, spacing: Theme.Space.lg) {
-                HStack {
-                    VStack(alignment: .leading) {
-                        Text(item.displayName).font(.title2.weight(.semibold)).foregroundStyle(Theme.textPrimary)
-                        Text("\(item.publisher) · \(item.license.label)").font(.caption).foregroundStyle(Theme.textSecondary)
-                    }
-                    Spacer()
-                    Button { dismiss() } label: {
-                        Image(systemName: "xmark.circle.fill").foregroundStyle(Theme.textSecondary)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Close")
-                }
+                header
                 FitBadge(capabilities: model.capabilities(for: item))
                 Text(model.capabilities(for: item).note).font(.caption).foregroundStyle(Theme.textSecondary)
 
-                #if os(macOS)
-                if item.family == .flux2 {
-                    // FLUX: choose precision, then manage each weight component individually.
-                    precisionSection
-                    if model.selectedID == item.id, case .downloading(let f) = model.phase {
-                        // A card-initiated download (completing the active recipe) is visible here too.
-                        VStack(spacing: Theme.Space.xs) {
-                            ProgressView(value: f).tint(Theme.accent)
-                            Text("Downloading… \(Int(f * 100))%")
-                                .font(.caption).monospacedDigit().foregroundStyle(Theme.textSecondary)
-                        }.frame(maxWidth: .infinity)
-                    }
-                    componentsSection
-                    if model.isDownloaded(item) {
-                        Button { model.selectedID = item.id; dismiss() } label: {
-                            Label("Use in Create", systemImage: "wand.and.stars").frame(maxWidth: .infinity)
-                        }.buttonStyle(StudioButtonStyle(.primary))
-                    }
-                } else {
-                    variantTable
-                    installAction
-                }
-                #else
-                variantTable
-                installAction
-                #endif
+                if !recipe.axes.isEmpty { precisionSection(recipe.axes) }
+                if isDownloadingModel, case .downloading(let f) = model.phase { modelProgress(f) }
+                componentsSection(recipe)
+                footer(recipe)
             }
             .padding(Theme.Space.xl)
         }
         .background(Theme.bg)
         .scrollBounceBehavior(.basedOnSize)
-        .confirmationDialog("Delete \(item.displayName) weights?",
-                            isPresented: $confirmDelete, titleVisibility: .visible) {
-            Button("Delete", role: .destructive) { Task { await model.delete(item) } }
+        .confirmationDialog("Remove all \(item.displayName) weights?",
+                            isPresented: $confirmRemoveAll, titleVisibility: .visible) {
+            Button("Remove all", role: .destructive) { Task { await model.delete(item) } }
             Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("Frees the disk space. You can download it again anytime.")
+        } message: { Text("Frees the disk space. You can download it again anytime.") }
+        .confirmationDialog(pendingDelete.map { "Delete \($0.title)?" } ?? "",
+                            isPresented: Binding(get: { pendingDelete != nil },
+                                                 set: { if !$0 { pendingDelete = nil } }),
+                            titleVisibility: .visible, presenting: pendingDelete) { c in
+            Button("Delete", role: .destructive) { Task { await model.removeComponent(c.id, model: item) } }
+            Button("Cancel", role: .cancel) {}
+        } message: { c in
+            Text(c.isActive ? "This is part of the active recipe — you'll need it to generate."
+                            : "Frees the disk space. You can download it again anytime.")
         }
     }
 
-    private func row(_ k: String, _ value: String) -> some View {
+    private var header: some View {
         HStack {
-            Text(k).foregroundStyle(Theme.textSecondary)
+            VStack(alignment: .leading) {
+                Text(item.displayName).font(.title2.weight(.semibold)).foregroundStyle(Theme.textPrimary)
+                Text("\(item.publisher) · \(item.license.label)").font(.caption).foregroundStyle(Theme.textSecondary)
+            }
             Spacer()
-            Text(value).foregroundStyle(Theme.textPrimary).monospacedDigit()
-        }.font(.subheadline)
-    }
-
-    /// The fixed variant table (used for single-precision models like Z-Image).
-    private var variantTable: some View {
-        let v = item.variants[0]
-        return VStack(alignment: .leading, spacing: Theme.Space.sm) {
-            row("Precision", v.precision.label)
-            row("Download size", ByteCountFormatter.string(fromByteCount: v.approximateBytes, countStyle: .file))
-            row("Transformer", ByteCountFormatter.string(fromByteCount: v.components.transformer, countStyle: .file))
-            row("Text encoder", ByteCountFormatter.string(fromByteCount: v.components.textEncoder, countStyle: .file))
-            row("VAE", ByteCountFormatter.string(fromByteCount: v.components.vae, countStyle: .file))
-        }.studioCard()
-    }
-
-    /// Model-level install action (download → progress → use + delete) for single-component models.
-    @ViewBuilder private var installAction: some View {
-        if model.selectedID == item.id, case .downloading(let f) = model.phase {
-            VStack(spacing: Theme.Space.xs) {
-                ProgressView(value: f).tint(Theme.accent)
-                Text("Downloading… \(Int(f * 100))%")
-                    .font(.caption).monospacedDigit().foregroundStyle(Theme.textSecondary)
+            Button { dismiss() } label: {
+                Image(systemName: "xmark.circle.fill").foregroundStyle(Theme.textSecondary)
             }
-            .frame(maxWidth: .infinity)
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel("Downloading")
-            .accessibilityValue("\(Int(f * 100)) percent")
-        } else if !model.isDownloaded(item) {
-            Button { model.selectedID = item.id; Task { await model.download() } } label: {
-                Label("Download", systemImage: "arrow.down.circle").frame(maxWidth: .infinity)
-            }.buttonStyle(StudioButtonStyle(.primary)).disabled(model.isBusy)
-        } else {
-            VStack(spacing: Theme.Space.sm) {
-                Button { model.selectedID = item.id; dismiss() } label: {
-                    Label("Use in Create", systemImage: "wand.and.stars").frame(maxWidth: .infinity)
-                }.buttonStyle(StudioButtonStyle(.primary))
-                Button { confirmDelete = true } label: {
-                    Label("Delete weights", systemImage: "trash").frame(maxWidth: .infinity)
-                }.buttonStyle(StudioButtonStyle(.secondary)).disabled(model.isBusy)
-            }
+            .buttonStyle(.plain).accessibilityLabel("Close")
         }
     }
 
-    #if os(macOS)
-    /// FLUX precision: independent transformer + text-encoder precision pickers. Changing either
-    /// re-points which weights are needed, so the install state below updates accordingly.
-    @ViewBuilder private var precisionSection: some View {
+    @ViewBuilder private func modelProgress(_ f: Double) -> some View {
+        VStack(spacing: Theme.Space.xs) {
+            ProgressView(value: f).tint(Theme.accent)
+            Text("Downloading… \(Int(f * 100))%")
+                .font(.caption).monospacedDigit().foregroundStyle(Theme.textSecondary)
+        }.frame(maxWidth: .infinity)
+    }
+
+    // MARK: Precision
+
+    @ViewBuilder private func precisionSection(_ axes: [PrecisionAxis]) -> some View {
         VStack(alignment: .leading, spacing: Theme.Space.sm) {
             Text("PRECISION").font(.caption2.weight(.semibold)).foregroundStyle(Theme.textTertiary)
             VStack(spacing: Theme.Space.sm) {
-                precisionRow(title: "Model precision",
-                             value: model.fluxTransformer.label, note: model.fluxTransformer.note) {
-                    ForEach(Flux2FacadeEngine.FluxTransformerPrecision.allCases) { option in
-                        Button(option.label) { withAnimation(Motion.select) { model.fluxTransformer = option } }
-                    }
-                }
-                Divider().background(Theme.hairline)
-                precisionRow(title: "Text encoder",
-                             value: model.fluxEncoder.label, note: model.fluxEncoder.note) {
-                    ForEach(Flux2FacadeEngine.FluxEncoderPrecision.allCases) { option in
-                        Button(option.label) { withAnimation(Motion.select) { model.fluxEncoder = option } }
-                    }
-                }
-            }
-            .studioCard()
-        }
-    }
-
-    @ViewBuilder private func precisionRow<Menu: View>(title: String, value: String, note: String,
-                                                       @ViewBuilder menu: () -> Menu) -> some View {
-        HStack(alignment: .firstTextBaseline) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(.subheadline).foregroundStyle(Theme.textPrimary)
-                Text(note).font(.caption2).foregroundStyle(Theme.textTertiary)
-            }
-            Spacer(minLength: Theme.Space.md)
-            SwiftUI.Menu { menu() } label: {
-                HStack(spacing: 4) {
-                    Text(value).font(.subheadline).foregroundStyle(Theme.accent)
-                    Image(systemName: "chevron.up.chevron.down").font(.caption2).foregroundStyle(Theme.textTertiary)
-                }
-            }
-            .menuStyle(.borderlessButton)
-            .fixedSize()
-        }
-    }
-
-    /// The per-component download/delete list — the user decides exactly which weights to keep.
-    @ViewBuilder private var componentsSection: some View {
-        let _ = model.componentsRevision   // re-read the on-disk list when it changes
-        let components = model.fluxComponents()
-        let onDisk = components.filter(\.isDownloaded).reduce(Int64(0)) { $0 + $1.bytes }
-        VStack(alignment: .leading, spacing: Theme.Space.sm) {
-            HStack {
-                Text("COMPONENTS").font(.caption2.weight(.semibold)).foregroundStyle(Theme.textTertiary)
-                Spacer()
-                Text("\(ByteCountFormatter.string(fromByteCount: onDisk, countStyle: .file)) on disk")
-                    .font(.caption2).foregroundStyle(Theme.textTertiary)
-            }
-            VStack(spacing: 0) {
-                ForEach(Array(components.enumerated()), id: \.element.id) { index, component in
+                ForEach(Array(axes.enumerated()), id: \.element.id) { index, axis in
                     if index > 0 { Divider().background(Theme.hairline) }
-                    componentRow(component)
+                    precisionRow(axis)
                 }
             }.studioCard()
         }
     }
 
-    @ViewBuilder private func componentRow(_ c: Flux2FacadeEngine.Flux2ComponentInfo) -> some View {
+    @ViewBuilder private func precisionRow(_ axis: PrecisionAxis) -> some View {
+        HStack(alignment: .firstTextBaseline) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(axis.title).font(.subheadline).foregroundStyle(Theme.textPrimary)
+                if let note = axis.selectedOption?.note, !note.isEmpty {
+                    Text(note).font(.caption2).foregroundStyle(Theme.textTertiary)
+                }
+            }
+            Spacer(minLength: Theme.Space.md)
+            Menu {
+                ForEach(axis.options) { option in
+                    Button(option.label) { withAnimation(Motion.select) { model.setPrecision(axisID: axis.id, optionID: option.id) } }
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Text(axis.selectedOption?.label ?? "").font(.subheadline).foregroundStyle(Theme.accent)
+                    Image(systemName: "chevron.up.chevron.down").font(.caption2).foregroundStyle(Theme.textTertiary)
+                }
+            }
+            .fixedSize()
+        }
+    }
+
+    // MARK: Components
+
+    @ViewBuilder private func componentsSection(_ recipe: ModelRecipe) -> some View {
+        VStack(alignment: .leading, spacing: Theme.Space.sm) {
+            HStack {
+                Text("COMPONENTS").font(.caption2.weight(.semibold)).foregroundStyle(Theme.textTertiary)
+                Spacer()
+                Text("\(ByteCountFormatter.string(fromByteCount: recipe.bytesOnDisk, countStyle: .file)) on disk")
+                    .font(.caption2).foregroundStyle(Theme.textTertiary)
+            }
+            VStack(spacing: 0) {
+                ForEach(Array(recipe.components.enumerated()), id: \.element.id) { index, c in
+                    if index > 0 { Divider().background(Theme.hairline) }
+                    componentRow(c, showActive: !recipe.axes.isEmpty)
+                }
+            }.studioCard()
+        }
+    }
+
+    @ViewBuilder private func componentRow(_ c: RecipeComponent, showActive: Bool) -> some View {
         HStack(spacing: Theme.Space.md) {
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
@@ -348,11 +280,11 @@ private struct ModelDetail: View {
                         .padding(.horizontal, 7).padding(.vertical, 2)
                         .background(badgeColor(c.kind).opacity(0.18), in: Capsule())
                         .foregroundStyle(badgeColor(c.kind))
-                    if model.fluxActiveComponentIDs.contains(c.id) {
+                    if showActive && c.isActive {
                         Text("Active").font(.caption2.weight(.medium))
                             .padding(.horizontal, 7).padding(.vertical, 2)
-                            .background(Theme.fitGreen.opacity(0.18), in: Capsule())
-                            .foregroundStyle(Theme.fitGreen)
+                            .background(Theme.accentSoft, in: Capsule())
+                            .foregroundStyle(Theme.accent)
                     }
                 }
                 if !c.subtitle.isEmpty {
@@ -370,42 +302,65 @@ private struct ModelDetail: View {
         .padding(.vertical, 8)
     }
 
-    @ViewBuilder private func componentControl(_ c: Flux2FacadeEngine.Flux2ComponentInfo) -> some View {
-        if model.fluxComponentDownloadID == c.id {
-            ProgressView(value: model.fluxComponentFraction).frame(width: 54).tint(Theme.accent)
-        } else if model.fluxComponentError?.id == c.id {
-            Button { Task { await model.downloadFluxComponent(c.id) } } label: {
-                HStack(spacing: 4) { Image(systemName: "arrow.clockwise"); Text("Retry") }
-                    .font(.caption.weight(.medium)).foregroundStyle(Theme.danger)
-                    .padding(.horizontal, 10).padding(.vertical, 6)
-                    .overlay(Capsule().strokeBorder(Theme.danger.opacity(0.5)))
+    @ViewBuilder private func componentControl(_ c: RecipeComponent) -> some View {
+        if let f = model.componentProgress(c.id, model: item) {
+            ProgressView(value: f).frame(width: 54).tint(Theme.accent)
+        } else if model.componentErrorMessage(c.id) != nil {
+            Button { Task { await model.installComponent(c.id, model: item) } } label: {
+                pill("Retry", icon: "arrow.clockwise", color: Theme.danger)
             }
-            .buttonStyle(.plain).disabled(model.isBusy)
-            .accessibilityLabel("Retry \(c.title)")
+            .buttonStyle(.plain).disabled(model.isBusy).accessibilityLabel("Retry \(c.title)")
         } else if c.isDownloaded {
-            Button { Task { await model.deleteFluxComponent(c.id) } } label: {
+            Button { pendingDelete = c } label: {
                 Image(systemName: "trash").foregroundStyle(Theme.textSecondary)
             }
-            .buttonStyle(.plain).disabled(model.isBusy)
-            .accessibilityLabel("Delete \(c.title)")
+            .buttonStyle(.plain).disabled(model.isBusy).accessibilityLabel("Delete \(c.title)")
         } else {
-            Button { Task { await model.downloadFluxComponent(c.id) } } label: {
-                HStack(spacing: 4) { Image(systemName: "arrow.down"); Text("Get") }
-                    .font(.caption.weight(.medium)).foregroundStyle(Theme.accent)
-                    .padding(.horizontal, 12).padding(.vertical, 6)
-                    .overlay(Capsule().strokeBorder(Theme.accent.opacity(0.5)))
+            Button { Task { await model.installComponent(c.id, model: item) } } label: {
+                pill("Get", icon: "arrow.down", color: Theme.accent)
             }
-            .buttonStyle(.plain).disabled(model.isBusy)
-            .accessibilityLabel("Download \(c.title)")
+            .buttonStyle(.plain).disabled(model.isBusy).accessibilityLabel("Download \(c.title)")
         }
     }
 
-    private func badgeColor(_ kind: Flux2FacadeEngine.Flux2ComponentInfo.Kind) -> Color {
+    private func pill(_ text: String, icon: String, color: Color) -> some View {
+        HStack(spacing: 4) { Image(systemName: icon); Text(text) }
+            .font(.caption.weight(.medium)).foregroundStyle(color)
+            .padding(.horizontal, 10).padding(.vertical, 6)
+            .overlay(Capsule().strokeBorder(color.opacity(0.5)))
+    }
+
+    // MARK: Footer
+
+    @ViewBuilder private func footer(_ recipe: ModelRecipe) -> some View {
+        VStack(spacing: Theme.Space.sm) {
+            if recipe.isInstalled {
+                Button { model.selectedID = item.id; dismiss() } label: {
+                    Label("Use in Create", systemImage: "wand.and.stars").frame(maxWidth: .infinity)
+                }.buttonStyle(StudioButtonStyle(.primary))
+            } else if recipe.components.count > 1 && !isDownloadingModel {
+                Button { Task { await model.installRecipe(item) } } label: {
+                    Label(footerDownloadLabel(recipe), systemImage: "arrow.down.circle").frame(maxWidth: .infinity)
+                }.buttonStyle(StudioButtonStyle(.primary)).disabled(model.isBusy)
+            }
+            if recipe.components.count > 1 && recipe.bytesOnDisk > 0 {
+                Button { confirmRemoveAll = true } label: {
+                    Label("Remove all weights", systemImage: "trash").frame(maxWidth: .infinity)
+                }.buttonStyle(StudioButtonStyle(.secondary)).disabled(model.isBusy)
+            }
+        }
+    }
+
+    private func footerDownloadLabel(_ recipe: ModelRecipe) -> String {
+        let bytes = ByteCountFormatter.string(fromByteCount: recipe.missingBytes, countStyle: .file)
+        return recipe.missing.count < recipe.activeCount ? "Complete recipe · \(bytes)" : "Download all · \(bytes)"
+    }
+
+    private func badgeColor(_ kind: RecipeComponent.Kind) -> Color {
         switch kind {
-        case .transformer: return Theme.accent
+        case .transformer, .weights: return Theme.accent
         case .textEncoder: return Color(red: 0.35, green: 0.6, blue: 0.9)
         case .vae: return Theme.textTertiary
         }
     }
-    #endif
 }
