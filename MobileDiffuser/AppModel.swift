@@ -150,14 +150,48 @@ final class AppModel {
         await runGenerate()
     }
 
-    /// Download the selected Z-Image weights. No reentrancy guard — callers hold `inFlight`.
+    /// Delete a model's downloaded weights to free disk space. If that model is currently loaded,
+    /// it is unloaded first so memory is freed too.
+    func delete(_ model: DiffusionModel) async {
+        guard !inFlight else { return }
+        inFlight = true; defer { inFlight = false }
+        if loadedID == model.id, let current = engine {
+            engine = nil; loadedID = nil
+            await current.unload()
+        }
+        switch model.family {
+        case .zImage:
+            let url = downloader.localURL(repoId: model.variants[0].source.huggingFaceRepo)
+            try? FileManager.default.removeItem(at: url)
+        case .flux2:
+            #if os(macOS)
+            try? Flux2FacadeEngine.deleteWeights()
+            #endif
+        default:
+            break
+        }
+        phase = .idle
+    }
+
+    /// Download the selected model's weights. No reentrancy guard — callers hold `inFlight`.
     private func downloadSelected() async {
-        guard selected.family == .zImage else { return }
-        let repo = selected.variants[0].source.huggingFaceRepo
+        let model = selected
         do {
             phase = .downloading(0)
-            _ = try await downloader.download(repoId: repo) { fraction in
-                Task { @MainActor in if case .downloading = self.phase { self.phase = .downloading(fraction) } }
+            switch model.family {
+            case .zImage:
+                let repo = model.variants[0].source.huggingFaceRepo
+                _ = try await downloader.download(repoId: repo) { fraction in
+                    Task { @MainActor in if case .downloading = self.phase { self.phase = .downloading(fraction) } }
+                }
+            case .flux2:
+                #if os(macOS)
+                try await Flux2FacadeEngine.download { fraction in
+                    Task { @MainActor in if case .downloading = self.phase { self.phase = .downloading(fraction) } }
+                }
+                #endif
+            default:
+                break
             }
             phase = .idle
         } catch {

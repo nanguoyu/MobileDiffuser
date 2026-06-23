@@ -107,11 +107,11 @@ struct ModelAction: View {
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("Downloading")
             .accessibilityValue("\(Int(f * 100)) percent")
-        } else if model.isDownloaded(m) || (m.family != .zImage) {
+        } else if model.isDownloaded(m) {
             Button {
                 model.selectedID = m.id; dismiss()   // pick this model and return to Create
             } label: {
-                Label(model.isDownloaded(m) ? "Use" : "Use (downloads on first run)", systemImage: "wand.and.stars")
+                Label("Use", systemImage: "wand.and.stars")
             }
             .buttonStyle(StudioButtonStyle(.primary))
         } else {
@@ -130,6 +130,7 @@ private struct ModelDetail: View {
     @Bindable var model: AppModel
     let item: DiffusionModel
     @Environment(\.dismiss) private var dismiss
+    @State private var confirmDelete = false
 
     var body: some View {
         let v = item.variants[0]
@@ -169,19 +170,31 @@ private struct ModelDetail: View {
                     .accessibilityElement(children: .ignore)
                     .accessibilityLabel("Downloading")
                     .accessibilityValue("\(Int(f * 100)) percent")
-                } else if item.family == .zImage && !model.isDownloaded(item) {
+                } else if !model.isDownloaded(item) {
                     Button { model.selectedID = item.id; Task { await model.download() } } label: {
                         Label("Download", systemImage: "arrow.down.circle").frame(maxWidth: .infinity)
                     }.buttonStyle(StudioButtonStyle(.primary)).disabled(model.isBusy)
                 } else {
-                    Button { model.selectedID = item.id; dismiss() } label: {
-                        Label("Use in Create", systemImage: "wand.and.stars").frame(maxWidth: .infinity)
-                    }.buttonStyle(StudioButtonStyle(.primary))
+                    VStack(spacing: Theme.Space.sm) {
+                        Button { model.selectedID = item.id; dismiss() } label: {
+                            Label("Use in Create", systemImage: "wand.and.stars").frame(maxWidth: .infinity)
+                        }.buttonStyle(StudioButtonStyle(.primary))
+                        Button { confirmDelete = true } label: {
+                            Label("Delete weights", systemImage: "trash").frame(maxWidth: .infinity)
+                        }.buttonStyle(StudioButtonStyle(.secondary)).disabled(model.isBusy)
+                    }
                 }
             }
             .padding(Theme.Space.xl)
         }
         .background(Theme.bg)
+        .confirmationDialog("Delete \(item.displayName) weights?",
+                            isPresented: $confirmDelete, titleVisibility: .visible) {
+            Button("Delete", role: .destructive) { Task { await model.delete(item) } }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Frees the disk space. You can download it again anytime.")
+        }
     }
 
     private func row(_ k: String, _ value: String) -> some View {
