@@ -32,12 +32,28 @@ struct SettingsView: View {
     // MARK: Sections
 
     private var modelsSection: some View {
-        section("Models", icon: "square.stack.3d.up") {
-            row("Installed", "\(model.downloadedModelCount) of \(model.models.count)")
+        VStack(alignment: .leading, spacing: Theme.Space.sm) {
+            sectionLabel("Models", icon: "square.stack.3d.up")
             Button { showModels = true } label: {
-                Label("Manage models", systemImage: "slider.horizontal.3").frame(maxWidth: .infinity)
+                HStack(spacing: Theme.Space.md) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Manage models")
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(Theme.textPrimary)
+                        Text("\(model.downloadedModelCount) of \(model.models.count) installed")
+                            .font(.caption)
+                            .foregroundStyle(Theme.textSecondary)
+                    }
+                    Spacer(minLength: Theme.Space.md)
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(Theme.textTertiary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .studioCard()
+                .contentShape(Rectangle())
             }
-            .buttonStyle(StudioButtonStyle(.secondary))
+            .buttonStyle(.plain)
             .accessibilityHint("Download, switch, and inspect models")
         }
     }
@@ -85,18 +101,21 @@ struct SettingsView: View {
 
     // MARK: Building blocks
 
+    private func sectionLabel(_ title: String, icon: String) -> some View {
+        Label {
+            Text(title.uppercased())
+        } icon: {
+            Image(systemName: icon)
+        }
+        .font(.caption2.weight(.semibold))
+        .foregroundStyle(Theme.textTertiary)
+        .accessibilityAddTraits(.isHeader)
+    }
+
     private func section(_ title: String, icon: String,
                          @ViewBuilder _ content: () -> some View) -> some View {
         VStack(alignment: .leading, spacing: Theme.Space.sm) {
-            Label {
-                Text(title.uppercased())
-            } icon: {
-                Image(systemName: icon)
-            }
-            .font(.caption2.weight(.semibold))
-            .foregroundStyle(Theme.textTertiary)
-            .accessibilityAddTraits(.isHeader)
-
+            sectionLabel(title, icon: icon)
             VStack(alignment: .leading, spacing: Theme.Space.md) { content() }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .studioCard()
