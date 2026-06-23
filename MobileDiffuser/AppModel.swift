@@ -6,21 +6,22 @@ import SwiftUI
 import CoreGraphics
 import ZImageMLX
 
-/// Drives a single Z-Image generation through `ZImagePipeline`. UI state lives on the main actor;
-/// the heavy denoise runs on a detached task so the UI stays responsive.
+/// Drives model download (via `ModelDownloader`) and generation (via `ZImagePipeline`). UI state
+/// lives on the main actor; the heavy denoise runs on a detached task so the UI stays responsive.
 @MainActor
 @Observable
 final class AppModel {
     enum Phase: Equatable {
         case idle
-        case loading(Double)        // 0…1 model load
+        case downloading(Double)    // 0…1 model download
+        case loading(Double)        // 0…1 weight load into MLX
         case generating(Int, Int)   // step, total
         case done
         case failed(String)
     }
 
-    /// Folder laid out like `Z-Image-Turbo-6B-MLX-Q4` (text_encoder/ transformer/ vae/ tokenizer/).
-    var modelDirectory = "\(NSHomeDirectory())/code/z-image-weights"
+    let models = ZImageCatalog.all
+    var selected: ZImageCatalogModel = ZImageCatalog.turboQ4
     var prompt = "a red panda on a mossy rock, soft morning light"
     var size = 1024
     var steps = 8
@@ -28,25 +29,56 @@ final class AppModel {
     var phase: Phase = .idle
     var image: CGImage?
 
+    private let downloader: ModelDownloader
     private var pipeline: ZImagePipeline?
     private var loadedDirectory: String?
 
-    var isBusy: Bool {
-        switch phase { case .loading, .generating: return true; default: return false }
+    init() {
+        let support = try? FileManager.default.url(
+            for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+        let base = (support ?? URL(fileURLWithPath: NSTemporaryDirectory())).appending(component: "MobileDiffuser")
+        downloader = ModelDownloader(downloadBase: base)
     }
+
+    var isDownloaded: Bool { downloader.isDownloaded(repoId: selected.id) }
+
+    var isBusy: Bool {
+        switch phase { case .downloading, .loading, .generating: return true; default: return false }
+    }
+
+    var isFailed: Bool { if case .failed = phase { return true } else { return false } }
 
     var statusText: String {
         switch phase {
-        case .idle: return "Ready"
-        case .loading(let f): return "Loading model… \(Int(f * 100))%"
+        case .idle: return isDownloaded ? "Ready" : "Not downloaded"
+        case .downloading(let f): return "Downloading model… \(Int(f * 100))%"
+        case .loading(let f): return "Loading into memory… \(Int(f * 100))%"
         case .generating(let s, let t): return "Generating… step \(s)/\(t)"
         case .done: return "Done"
         case .failed(let m): return "Failed: \(m)"
         }
     }
 
+    /// Download the selected model (idempotent — fast if already present).
+    func download() async {
+        do {
+            phase = .downloading(0)
+            _ = try await downloader.download(repoId: selected.id) { fraction in
+                Task { @MainActor in self.phase = .downloading(fraction) }
+            }
+            phase = .idle
+        } catch {
+            phase = .failed(String(describing: error))
+        }
+    }
+
+    /// Generate an image, downloading + loading the model first if needed.
     func generate() async {
-        let directory = modelDirectory
+        if !isDownloaded {
+            await download()
+            guard isDownloaded else { return }
+        }
+        let directory = downloader.localURL(repoId: selected.id).path
         let prompt = self.prompt, size = self.size, steps = self.steps
         let seed = UInt64(seedText) ?? 42
         do {
