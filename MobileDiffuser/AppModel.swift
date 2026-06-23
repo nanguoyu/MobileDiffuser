@@ -6,9 +6,7 @@ import SwiftUI
 import CoreGraphics
 import DiffusionCore
 import ZImageMLX
-#if os(macOS)
-import Flux2DiffusionEngine
-#endif
+import AppEngines   // re-exports Flux2DiffusionEngine on macOS only (empty on iOS)
 
 /// The four studio sections (Mac sidebar / iPhone tab bar).
 enum Tab: String, CaseIterable, Identifiable {

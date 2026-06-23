@@ -51,6 +51,28 @@ model/device requires:
 > The iPhone path is genuine R&D — no one has shipped MLX diffusion this way on a phone.
 > Klein 4B 4-bit (two-phase) is the fastest proof point; Z-Image Turbo validates streaming.
 
+### FLUX on iOS — current state & plan
+
+The shipping `flux-2-swift-mlx` is **monolithic** (one `Flux2Pipeline`, no per-block streaming)
+and uses macOS-only APIs (`import AppKit` / `NSImage` in its encoders, image processing, and
+training), so **today FLUX is the macOS path** and Z-Image (block-streamable) is the iPhone path.
+
+**Goal (committed): run FLUX on iPhone, implemented by us.** Two pieces of work:
+1. **Cross-platform image handling** — replace `NSImage`/`AppKit` with `CGImage` +
+   `ImageIO`/`CoreGraphics`, guard training behind `#if os(macOS)`, so `Flux2Core` /
+   `FluxTextEncoders` compile for iOS.
+2. **Partial load for FLUX** — give FLUX the same ladder Z-Image uses (two-phase staging +
+   block streaming via `WeightSource` ranged reads) so Klein 4B (~4.6 GB) fits an 8 GB iPhone
+   (≈2.6–3 GB staged peak, per the table) — and so even **larger models (Klein 9B, Qwen-Image)
+   load on device via partial load / external SSD**.
+
+**Interim decision (current):** FLUX is excluded from the iOS build via a thin local
+`AppEngines` wrapper package that depends on `Flux2DiffusionEngine` **only on macOS**
+(`.product(..., condition: .when(platforms: [.macOS]))`). Xcode's `platformFilter` alone does
+NOT work — SPM validates the *whole* package graph per platform, so a macOS-only package in the
+graph breaks the iOS build; the SPM-native platform-conditional product dependency (expressible
+only in a Package manifest, hence the wrapper) is the fix. Z-Image is today's on-device model.
+
 ---
 
 ## 3. Architecture
