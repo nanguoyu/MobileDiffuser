@@ -21,11 +21,18 @@ struct ContentView: View {
     @ViewBuilder private var shell: some View {
         #if os(macOS)
         NavigationSplitView {
-            List(Tab.allCases, selection: $model.tab) { tab in
-                Label(tab.title, systemImage: tab.icon).tag(tab)
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(Tab.allCases) { tab in
+                    SidebarRow(tab: tab, selected: model.tab == tab) {
+                        withAnimation(Motion.select) { model.tab = tab }
+                    }
+                }
+                Spacer(minLength: 0)
             }
-            .navigationSplitViewColumnWidth(min: 180, ideal: 200)
-            .listStyle(.sidebar)
+            .padding(.horizontal, 8)
+            .padding(.top, 8)
+            .frame(maxHeight: .infinity, alignment: .top)
+            .navigationSplitViewColumnWidth(min: 200, ideal: 216)
         } detail: {
             screen(for: model.tab)
                 .frame(minWidth: 560, minHeight: 480)
@@ -49,5 +56,31 @@ struct ContentView: View {
         }
     }
 }
+
+#if os(macOS)
+/// A sidebar item with a violet-tinted selected state, so the navigation matches the studio accent
+/// instead of the system-blue list-selection highlight.
+private struct SidebarRow: View {
+    let tab: Tab
+    let selected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Label(tab.title, systemImage: tab.icon)
+                .labelStyle(.titleAndIcon)
+                .font(.body)
+                .foregroundStyle(selected ? Theme.accent : Theme.textSecondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                .background(selected ? Theme.accentSoft : Color.clear,
+                            in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+}
+#endif
 
 #Preview { ContentView() }

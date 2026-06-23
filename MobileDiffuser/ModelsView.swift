@@ -43,6 +43,7 @@ struct ModelsSheet: View {
                     }
                 }
         }
+        .tint(Theme.accent)
         #if os(macOS)
         .frame(minWidth: 540, minHeight: 600)
         #endif

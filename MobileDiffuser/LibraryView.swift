@@ -27,7 +27,7 @@ struct LibraryView: View {
         .sheet(item: $selected) { gen in
             GenerationDetail(model: model, gen: gen)
                 #if os(macOS)
-                .frame(minWidth: 420, idealWidth: 480, minHeight: 520, idealHeight: 640)
+                .frame(minWidth: 660, idealWidth: 860, minHeight: 460, idealHeight: 600)
                 #endif
         }
     }
@@ -129,32 +129,59 @@ private struct GenerationDetail: View {
     #endif
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: Theme.Space.lg) {
-                header
-
-                Image(decorative: gen.image, scale: 1)
-                    .resizable()
-                    .aspectRatio(contentMode: .fit)
-                    .frame(maxWidth: .infinity)
-                    .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
-                            .strokeBorder(Theme.hairline)
-                    )
-                    .accessibilityLabel("Generated image")
-
-                prompt
-
-                params
-
-                actions
-            }
-            .padding(Theme.Space.xl)
-            .frame(maxWidth: 680)
-            .frame(maxWidth: .infinity)
+        VStack(spacing: 0) {
+            header
+                .padding(.horizontal, Theme.Space.xl)
+                .padding(.top, Theme.Space.lg)
+                .padding(.bottom, Theme.Space.md)
+            Divider().background(Theme.hairline)
+            content
         }
         .background(Theme.bg)
+    }
+
+    #if os(macOS)
+    /// Wide layout: image on the left, info on the right — everything fits without scrolling.
+    private var content: some View {
+        HStack(alignment: .top, spacing: Theme.Space.xl) {
+            imageView
+            infoColumn.frame(width: 300)
+        }
+        .padding(Theme.Space.xl)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+    #else
+    /// Tall layout: cap the image so the prompt, details, and actions stay in view.
+    private var content: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: Theme.Space.lg) {
+                imageView.frame(maxHeight: 360)
+                infoColumn
+            }
+            .padding(Theme.Space.xl)
+        }
+    }
+    #endif
+
+    private var imageView: some View {
+        Image(decorative: gen.image, scale: 1)
+            .resizable()
+            .aspectRatio(contentMode: .fit)
+            .frame(maxWidth: .infinity)
+            .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
+                    .strokeBorder(Theme.hairline)
+            )
+            .accessibilityLabel("Generated image")
+    }
+
+    private var infoColumn: some View {
+        VStack(alignment: .leading, spacing: Theme.Space.lg) {
+            prompt
+            params
+            actions
+        }
     }
 
     // MARK: Header (title + close)
