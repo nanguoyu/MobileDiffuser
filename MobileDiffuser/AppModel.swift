@@ -4,24 +4,37 @@
 
 import SwiftUI
 import CoreGraphics
+import DiffusionCore
 import ZImageMLX
+#if os(macOS)
+import Flux2DiffusionEngine
+#endif
 
-/// Drives model download (via `ModelDownloader`) and generation (via `ZImagePipeline`). UI state
-/// lives on the main actor; the heavy denoise runs on a detached task so the UI stays responsive.
+/// Drives any catalog model through a `DiffusionEngine` facade (Z-Image and — on macOS — FLUX.2),
+/// with model switching. UI state lives on the main actor; the engines are actors, so their heavy
+/// MLX work runs off-main without blocking the UI. Z-Image weights are downloaded in-app first;
+/// FLUX self-downloads inside its `load`.
 @MainActor
 @Observable
 final class AppModel {
     enum Phase: Equatable {
         case idle
-        case downloading(Double)    // 0…1 model download
-        case loading(Double)        // 0…1 weight load into MLX
-        case generating(Int, Int)   // step, total
+        case downloading(Double)
+        case loading(Double)
+        case generating(Int, Int)
         case done
         case failed(String)
     }
 
-    let models = ZImageCatalog.all
-    var selected: ZImageCatalogModel = ZImageCatalog.turboQ4
+    enum AppError: LocalizedError {
+        case unsupportedOnPlatform(String)
+        var errorDescription: String? {
+            switch self { case .unsupportedOnPlatform(let m): return m }
+        }
+    }
+
+    let models = Catalog.all
+    var selectedID: String = Catalog.all.first!.id
     var prompt = "a red panda on a mossy rock, soft morning light"
     var size = 1024
     var steps = 8
@@ -30,8 +43,8 @@ final class AppModel {
     var image: CGImage?
 
     private let downloader: ModelDownloader
-    private var pipeline: ZImagePipeline?
-    private var loadedDirectory: String?
+    private var engine: (any DiffusionEngine)?
+    private var loadedID: String?
 
     init() {
         let support = try? FileManager.default.url(
@@ -40,18 +53,25 @@ final class AppModel {
         downloader = ModelDownloader(downloadBase: base)
     }
 
-    var isDownloaded: Bool { downloader.isDownloaded(repoId: selected.id) }
+    var selected: DiffusionModel { models.first { $0.id == selectedID } ?? models[0] }
+
+    /// In-app download applies to Z-Image; FLUX manages its own weights inside `load`.
+    var managesOwnDownload: Bool { selected.family != .zImage }
+
+    var isDownloaded: Bool {
+        guard selected.family == .zImage else { return false }
+        return downloader.isDownloaded(repoId: selected.variants[0].source.huggingFaceRepo)
+    }
 
     var isBusy: Bool {
         switch phase { case .downloading, .loading, .generating: return true; default: return false }
     }
-
     var isFailed: Bool { if case .failed = phase { return true } else { return false } }
 
     var statusText: String {
         switch phase {
-        case .idle: return isDownloaded ? "Ready" : "Not downloaded"
-        case .downloading(let f): return "Downloading model… \(Int(f * 100))%"
+        case .idle: return managesOwnDownload ? "Ready to load" : (isDownloaded ? "Ready" : "Not downloaded")
+        case .downloading(let f): return "Downloading… \(Int(f * 100))%"
         case .loading(let f): return "Loading into memory… \(Int(f * 100))%"
         case .generating(let s, let t): return "Generating… step \(s)/\(t)"
         case .done: return "Done"
@@ -59,11 +79,13 @@ final class AppModel {
         }
     }
 
-    /// Download the selected model (idempotent — fast if already present).
+    /// Explicit download of the selected Z-Image model (no-op for self-managing families).
     func download() async {
+        guard selected.family == .zImage else { return }
+        let repo = selected.variants[0].source.huggingFaceRepo
         do {
             phase = .downloading(0)
-            _ = try await downloader.download(repoId: selected.id) { fraction in
+            _ = try await downloader.download(repoId: repo) { fraction in
                 Task { @MainActor in self.phase = .downloading(fraction) }
             }
             phase = .idle
@@ -72,36 +94,53 @@ final class AppModel {
         }
     }
 
-    /// Generate an image, downloading + loading the model first if needed.
     func generate() async {
-        if !isDownloaded {
-            await download()
-            guard isDownloaded else { return }
-        }
-        let directory = downloader.localURL(repoId: selected.id).path
-        let prompt = self.prompt, size = self.size, steps = self.steps
-        let seed = UInt64(seedText) ?? 42
+        let model = selected
         do {
-            if pipeline == nil || loadedDirectory != directory {
+            // Z-Image needs its weights on disk before the engine can load them.
+            if model.family == .zImage, !isDownloaded { await download(); guard isDownloaded else { return } }
+
+            if engine == nil || loadedID != model.id {
+                let built = try makeEngine(for: model)
                 phase = .loading(0)
-                let loaded = ZImagePipeline(modelDirectory: URL(fileURLWithPath: directory))
-                try await loaded.loadModels { fraction in
+                try await built.load(model, variant: model.variants[0], source: SafetensorsWeightSource(tensors: [:])) { fraction in
                     Task { @MainActor in self.phase = .loading(fraction) }
                 }
-                pipeline = loaded
-                loadedDirectory = directory
+                if let previous = engine { await previous.unload() }
+                engine = built
+                loadedID = model.id
             }
-            guard let pipeline else { return }
+            guard let engine else { return }
+
             phase = .generating(0, steps)
-            let cgImage = try await Task.detached(priority: .userInitiated) {
-                try pipeline.generate(prompt: prompt, size: size, steps: steps, seed: seed) { step, total in
-                    Task { @MainActor in self.phase = .generating(step, total) }
+            let request = GenerationRequest(prompt: prompt, steps: steps,
+                                            seed: UInt64(seedText) ?? 42,
+                                            size: ImageSize(width: size, height: size))
+            let cgImage = try await engine.generate(request) { progress in
+                Task { @MainActor in
+                    if case .denoising(let step, let total, _) = progress { self.phase = .generating(step, total) }
                 }
-            }.value
+            }
             image = cgImage
             phase = .done
         } catch {
             phase = .failed(String(describing: error))
+        }
+    }
+
+    private func makeEngine(for model: DiffusionModel) throws -> any DiffusionEngine {
+        switch model.family {
+        case .zImage:
+            let dir = downloader.localURL(repoId: model.variants[0].source.huggingFaceRepo)
+            return ZImageFacadeEngine(modelDirectory: dir)
+        case .flux2:
+            #if os(macOS)
+            return Flux2FacadeEngine()
+            #else
+            throw AppError.unsupportedOnPlatform("FLUX.2 runs on macOS only.")
+            #endif
+        default:
+            throw AppError.unsupportedOnPlatform("\(model.displayName) is not supported yet.")
         }
     }
 }

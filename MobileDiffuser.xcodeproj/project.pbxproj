@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		DDEE0000000000000000A001 /* ZImageMLX in Frameworks */ = {isa = PBXBuildFile; productRef = DDEE0000000000000000A003 /* ZImageMLX */; };
+		DDEE0000000000000000B001 /* Flux2DiffusionEngine in Frameworks */ = {isa = PBXBuildFile; platformFilter = macos; productRef = DDEE0000000000000000B003 /* Flux2DiffusionEngine */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -28,6 +29,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				DDEE0000000000000000A001 /* ZImageMLX in Frameworks */,
+				DDEE0000000000000000B001 /* Flux2DiffusionEngine in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -71,6 +73,7 @@
 			name = MobileDiffuser;
 			packageProductDependencies = (
 				DDEE0000000000000000A003 /* ZImageMLX */,
+				DDEE0000000000000000B003 /* Flux2DiffusionEngine */,
 			);
 			productName = MobileDiffuser;
 			productReference = AABB15032F698F45007A3533 /* MobileDiffuser.app */;
@@ -102,6 +105,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				DDEE0000000000000000A002 /* XCLocalSwiftPackageReference "../z-image-swift-mlx" */,
+				DDEE0000000000000000B002 /* XCLocalSwiftPackageReference "../flux2-diffusion-engine" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = AABB15042F698F45007A3533 /* Products */;
@@ -274,7 +278,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.example.MobileDiffuser;
@@ -306,7 +310,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.example.MobileDiffuser;
@@ -345,6 +349,10 @@
 			isa = XCLocalSwiftPackageReference;
 			relativePath = "../z-image-swift-mlx";
 		};
+		DDEE0000000000000000B002 /* XCLocalSwiftPackageReference "../flux2-diffusion-engine" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = "../flux2-diffusion-engine";
+		};
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -352,6 +360,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = DDEE0000000000000000A002 /* XCLocalSwiftPackageReference "../z-image-swift-mlx" */;
 			productName = ZImageMLX;
+		};
+		DDEE0000000000000000B003 /* Flux2DiffusionEngine */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = DDEE0000000000000000B002 /* XCLocalSwiftPackageReference "../flux2-diffusion-engine" */;
+			productName = Flux2DiffusionEngine;
 		};
 /* End XCSwiftPackageProductDependency section */
 

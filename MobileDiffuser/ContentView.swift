@@ -25,10 +25,11 @@ struct ContentView: View {
     private var modelBar: some View {
         HStack(spacing: 12) {
             Image(systemName: "cube.box.fill").foregroundStyle(.orange)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(model.selected.name).font(.subheadline.weight(.semibold))
-                Text(model.selected.detail).font(.caption2).foregroundStyle(.secondary)
+            Picker("Model", selection: $model.selectedID) {
+                ForEach(model.models) { Text($0.displayName).tag($0.id) }
             }
+            .pickerStyle(.menu).labelsHidden().disabled(model.isBusy)
+            Text(model.selected.summary).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
             Spacer()
             modelStatus
         }
@@ -42,6 +43,9 @@ struct ContentView: View {
                 ProgressView(value: f).frame(width: 90)
                 Text("\(Int(f * 100))%").font(.caption2).monospacedDigit().foregroundStyle(.secondary)
             }
+        } else if model.managesOwnDownload {
+            Label("Downloads on first run", systemImage: "icloud.and.arrow.down")
+                .font(.caption2).foregroundStyle(.secondary)
         } else if model.isDownloaded {
             Label("Ready", systemImage: "checkmark.circle.fill").font(.caption).foregroundStyle(.green)
         } else {
@@ -110,7 +114,7 @@ struct ContentView: View {
     }
 
     private var sizeString: String {
-        ByteCountFormatter.string(fromByteCount: model.selected.approximateBytes, countStyle: .file)
+        ByteCountFormatter.string(fromByteCount: model.selected.variants[0].approximateBytes, countStyle: .file)
     }
 
     private func picker(_ label: String, selection: Binding<Int>, options: [Int],
