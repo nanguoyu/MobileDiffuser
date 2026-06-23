@@ -134,7 +134,6 @@ private struct ModelDetail: View {
     @State private var confirmDelete = false
 
     var body: some View {
-        let v = item.variants[0]
         ScrollView {
             VStack(alignment: .leading, spacing: Theme.Space.lg) {
                 HStack {
@@ -152,43 +151,24 @@ private struct ModelDetail: View {
                 FitBadge(capabilities: model.capabilities(for: item))
                 Text(model.capabilities(for: item).note).font(.caption).foregroundStyle(Theme.textSecondary)
 
-                VStack(alignment: .leading, spacing: Theme.Space.sm) {
-                    row("Precision", v.precision.label)
-                    row("Download size", ByteCountFormatter.string(fromByteCount: v.approximateBytes, countStyle: .file))
-                    row("Transformer", ByteCountFormatter.string(fromByteCount: v.components.transformer, countStyle: .file))
-                    row("Text encoder", ByteCountFormatter.string(fromByteCount: v.components.textEncoder, countStyle: .file))
-                    row("VAE", ByteCountFormatter.string(fromByteCount: v.components.vae, countStyle: .file))
-                }.studioCard()
-
                 #if os(macOS)
-                if item.family == .flux2 { precisionSection }
-                #endif
-
-                if model.selectedID == item.id, case .downloading(let f) = model.phase {
-                    // Mirror the card's progress state so the detail reflects an in-flight download.
-                    VStack(spacing: Theme.Space.xs) {
-                        ProgressView(value: f).tint(Theme.accent)
-                        Text("Downloading… \(Int(f * 100))%")
-                            .font(.caption).monospacedDigit().foregroundStyle(Theme.textSecondary)
-                    }
-                    .frame(maxWidth: .infinity)
-                    .accessibilityElement(children: .ignore)
-                    .accessibilityLabel("Downloading")
-                    .accessibilityValue("\(Int(f * 100)) percent")
-                } else if !model.isDownloaded(item) {
-                    Button { model.selectedID = item.id; Task { await model.download() } } label: {
-                        Label("Download", systemImage: "arrow.down.circle").frame(maxWidth: .infinity)
-                    }.buttonStyle(StudioButtonStyle(.primary)).disabled(model.isBusy)
-                } else {
-                    VStack(spacing: Theme.Space.sm) {
+                if item.family == .flux2 {
+                    // FLUX: choose precision, then manage each weight component individually.
+                    precisionSection
+                    componentsSection
+                    if model.isDownloaded(item) {
                         Button { model.selectedID = item.id; dismiss() } label: {
                             Label("Use in Create", systemImage: "wand.and.stars").frame(maxWidth: .infinity)
                         }.buttonStyle(StudioButtonStyle(.primary))
-                        Button { confirmDelete = true } label: {
-                            Label("Delete weights", systemImage: "trash").frame(maxWidth: .infinity)
-                        }.buttonStyle(StudioButtonStyle(.secondary)).disabled(model.isBusy)
                     }
+                } else {
+                    variantTable
+                    installAction
                 }
+                #else
+                variantTable
+                installAction
+                #endif
             }
             .padding(Theme.Space.xl)
         }
@@ -208,6 +188,46 @@ private struct ModelDetail: View {
             Spacer()
             Text(value).foregroundStyle(Theme.textPrimary).monospacedDigit()
         }.font(.subheadline)
+    }
+
+    /// The fixed variant table (used for single-precision models like Z-Image).
+    private var variantTable: some View {
+        let v = item.variants[0]
+        return VStack(alignment: .leading, spacing: Theme.Space.sm) {
+            row("Precision", v.precision.label)
+            row("Download size", ByteCountFormatter.string(fromByteCount: v.approximateBytes, countStyle: .file))
+            row("Transformer", ByteCountFormatter.string(fromByteCount: v.components.transformer, countStyle: .file))
+            row("Text encoder", ByteCountFormatter.string(fromByteCount: v.components.textEncoder, countStyle: .file))
+            row("VAE", ByteCountFormatter.string(fromByteCount: v.components.vae, countStyle: .file))
+        }.studioCard()
+    }
+
+    /// Model-level install action (download → progress → use + delete) for single-component models.
+    @ViewBuilder private var installAction: some View {
+        if model.selectedID == item.id, case .downloading(let f) = model.phase {
+            VStack(spacing: Theme.Space.xs) {
+                ProgressView(value: f).tint(Theme.accent)
+                Text("Downloading… \(Int(f * 100))%")
+                    .font(.caption).monospacedDigit().foregroundStyle(Theme.textSecondary)
+            }
+            .frame(maxWidth: .infinity)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Downloading")
+            .accessibilityValue("\(Int(f * 100)) percent")
+        } else if !model.isDownloaded(item) {
+            Button { model.selectedID = item.id; Task { await model.download() } } label: {
+                Label("Download", systemImage: "arrow.down.circle").frame(maxWidth: .infinity)
+            }.buttonStyle(StudioButtonStyle(.primary)).disabled(model.isBusy)
+        } else {
+            VStack(spacing: Theme.Space.sm) {
+                Button { model.selectedID = item.id; dismiss() } label: {
+                    Label("Use in Create", systemImage: "wand.and.stars").frame(maxWidth: .infinity)
+                }.buttonStyle(StudioButtonStyle(.primary))
+                Button { confirmDelete = true } label: {
+                    Label("Delete weights", systemImage: "trash").frame(maxWidth: .infinity)
+                }.buttonStyle(StudioButtonStyle(.secondary)).disabled(model.isBusy)
+            }
+        }
     }
 
     #if os(macOS)
@@ -251,6 +271,80 @@ private struct ModelDetail: View {
             }
             .menuStyle(.borderlessButton)
             .fixedSize()
+        }
+    }
+
+    /// The per-component download/delete list — the user decides exactly which weights to keep.
+    @ViewBuilder private var componentsSection: some View {
+        let _ = model.componentsRevision   // re-read the on-disk list when it changes
+        let components = model.fluxComponents()
+        let onDisk = components.filter(\.isDownloaded).reduce(Int64(0)) { $0 + $1.bytes }
+        VStack(alignment: .leading, spacing: Theme.Space.sm) {
+            HStack {
+                Text("COMPONENTS").font(.caption2.weight(.semibold)).foregroundStyle(Theme.textTertiary)
+                Spacer()
+                Text("\(ByteCountFormatter.string(fromByteCount: onDisk, countStyle: .file)) on disk")
+                    .font(.caption2).foregroundStyle(Theme.textTertiary)
+            }
+            VStack(spacing: 0) {
+                ForEach(Array(components.enumerated()), id: \.element.id) { index, component in
+                    if index > 0 { Divider().background(Theme.hairline) }
+                    componentRow(component)
+                }
+            }.studioCard()
+        }
+    }
+
+    @ViewBuilder private func componentRow(_ c: Flux2FacadeEngine.Flux2ComponentInfo) -> some View {
+        HStack(spacing: Theme.Space.md) {
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    Text(c.title).font(.subheadline.weight(.medium)).foregroundStyle(Theme.textPrimary)
+                    Text(c.kind.rawValue).font(.caption2)
+                        .padding(.horizontal, 7).padding(.vertical, 2)
+                        .background(badgeColor(c.kind).opacity(0.18), in: Capsule())
+                        .foregroundStyle(badgeColor(c.kind))
+                }
+                if !c.subtitle.isEmpty {
+                    Text(c.subtitle).font(.caption2).foregroundStyle(Theme.textTertiary)
+                }
+                Text(c.repo).font(.caption2.monospaced()).foregroundStyle(Theme.textTertiary)
+                    .lineLimit(1).truncationMode(.middle)
+            }
+            Spacer(minLength: Theme.Space.sm)
+            Text(ByteCountFormatter.string(fromByteCount: c.bytes, countStyle: .file))
+                .font(.caption).foregroundStyle(Theme.textSecondary)
+            componentControl(c)
+        }
+        .padding(.vertical, 8)
+    }
+
+    @ViewBuilder private func componentControl(_ c: Flux2FacadeEngine.Flux2ComponentInfo) -> some View {
+        if model.fluxComponentDownloadID == c.id {
+            ProgressView(value: model.fluxComponentFraction).frame(width: 54).tint(Theme.accent)
+        } else if c.isDownloaded {
+            Button { model.deleteFluxComponent(c.id) } label: {
+                Image(systemName: "trash").foregroundStyle(Theme.textSecondary)
+            }
+            .buttonStyle(.plain).disabled(model.isBusy)
+            .accessibilityLabel("Delete \(c.title)")
+        } else {
+            Button { Task { await model.downloadFluxComponent(c.id) } } label: {
+                HStack(spacing: 4) { Image(systemName: "arrow.down"); Text("Get") }
+                    .font(.caption.weight(.medium)).foregroundStyle(Theme.accent)
+                    .padding(.horizontal, 12).padding(.vertical, 6)
+                    .overlay(Capsule().strokeBorder(Theme.accent.opacity(0.5)))
+            }
+            .buttonStyle(.plain).disabled(model.isBusy)
+            .accessibilityLabel("Download \(c.title)")
+        }
+    }
+
+    private func badgeColor(_ kind: Flux2FacadeEngine.Flux2ComponentInfo.Kind) -> Color {
+        switch kind {
+        case .transformer: return Theme.accent
+        case .textEncoder: return Color(red: 0.35, green: 0.6, blue: 0.9)
+        case .vae: return Theme.textTertiary
         }
     }
     #endif

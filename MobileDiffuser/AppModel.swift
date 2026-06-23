@@ -104,6 +104,37 @@ final class AppModel {
     var fluxEncoder: Flux2FacadeEngine.FluxEncoderPrecision = .bit8 {
         didSet { UserDefaults.standard.set(fluxEncoder.rawValue, forKey: "fluxEncoder") }
     }
+
+    /// Which FLUX component (by id) is downloading + its 0...1 progress, for the detail's list.
+    var fluxComponentDownloadID: String?
+    var fluxComponentFraction: Double = 0
+    /// Bumped after a component download/delete so views re-read the on-disk component list.
+    private(set) var componentsRevision = 0
+
+    /// The individually-managed FLUX components and their current on-disk state.
+    func fluxComponents() -> [Flux2FacadeEngine.Flux2ComponentInfo] { Flux2FacadeEngine.allComponents() }
+
+    /// Download one FLUX component by id (one at a time; shares the download/generate lock).
+    func downloadFluxComponent(_ id: String) async {
+        guard !inFlight else { return }
+        inFlight = true; defer { inFlight = false }
+        fluxComponentDownloadID = id; fluxComponentFraction = 0
+        defer { fluxComponentDownloadID = nil; componentsRevision += 1 }
+        do {
+            try await Flux2FacadeEngine.downloadComponent(id) { fraction in
+                Task { @MainActor in self.fluxComponentFraction = fraction }
+            }
+        } catch {
+            phase = .failed(String(describing: error))
+        }
+    }
+
+    /// Delete one FLUX component's weights by id.
+    func deleteFluxComponent(_ id: String) {
+        guard !inFlight else { return }
+        try? Flux2FacadeEngine.deleteComponent(id)
+        componentsRevision += 1
+    }
     #endif
 
     private let downloader: ModelDownloader
