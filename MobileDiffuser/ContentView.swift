@@ -22,15 +22,19 @@ struct ContentView: View {
         #if os(macOS)
         NavigationSplitView {
             VStack(alignment: .leading, spacing: 4) {
-                ForEach(Tab.allCases) { tab in
+                ForEach(Tab.allCases.filter { $0 != .settings }) { tab in
                     SidebarRow(tab: tab, selected: model.tab == tab) {
                         withAnimation(Motion.select) { model.tab = tab }
                     }
                 }
                 Spacer(minLength: 0)
+                // Settings pinned to the bottom of the sidebar, like most desktop apps.
+                SidebarRow(tab: .settings, selected: model.tab == .settings) {
+                    withAnimation(Motion.select) { model.tab = .settings }
+                }
             }
             .padding(.horizontal, 8)
-            .padding(.top, 8)
+            .padding(.vertical, 8)
             .frame(maxHeight: .infinity, alignment: .top)
             .navigationSplitViewColumnWidth(min: 200, ideal: 216)
         } detail: {
