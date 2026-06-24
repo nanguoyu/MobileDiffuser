@@ -57,21 +57,49 @@ The shipping `flux-2-swift-mlx` is **monolithic** (one `Flux2Pipeline`, no per-b
 and uses macOS-only APIs (`import AppKit` / `NSImage` in its encoders, image processing, and
 training), so **today FLUX is the macOS path** and Z-Image (block-streamable) is the iPhone path.
 
-**Goal (committed): run FLUX on iPhone, implemented by us.** Two pieces of work:
-1. **Cross-platform image handling** — replace `NSImage`/`AppKit` with `CGImage` +
-   `ImageIO`/`CoreGraphics`, guard training behind `#if os(macOS)`, so `Flux2Core` /
-   `FluxTextEncoders` compile for iOS.
-2. **Partial load for FLUX** — give FLUX the same ladder Z-Image uses (two-phase staging +
-   block streaming via `WeightSource` ranged reads) so Klein 4B (~4.6 GB) fits an 8 GB iPhone
-   (≈2.6–3 GB staged peak, per the table) — and so even **larger models (Klein 9B, Qwen-Image)
-   load on device via partial load / external SSD**.
+**Decision (2026-06-24): EXTEND `flux-2-swift-mlx` to be cross-platform — do NOT reimplement FLUX
+in the Z-Image streaming framework.** A from-scratch reimplementation (a `FluxArchitecture` on the
+`MLXDiffusionEngine` streaming seam) is technically attractive — the `mlx-community/flux2-klein-4b-4bit`
+checkpoint is mflux-format like Z-Image, so the download / `RangedFileWeightSource` / streaming infra
+and the Qwen3-4B encoder all drop straight in — BUT it would create **two FLUX forwards** (Mac vs iOS)
+that can drift, and it throws away everything `flux-2-swift-mlx` already supports (dev / klein-4b /
+klein-9b, multiple precisions, reference-image conditioning, LoRA, training). One shared implementation
+keeps Mac and iOS bit-for-bit consistent and lets future, higher-RAM iPhones run bigger variants.
 
-**Interim decision (current):** FLUX is excluded from the iOS build via a thin local
-`AppEngines` wrapper package that depends on `Flux2DiffusionEngine` **only on macOS**
-(`.product(..., condition: .when(platforms: [.macOS]))`). Xcode's `platformFilter` alone does
-NOT work — SPM validates the *whole* package graph per platform, so a macOS-only package in the
-graph breaks the iOS build; the SPM-native platform-conditional product dependency (expressible
-only in a Package manifest, hence the wrapper) is the fix. Z-Image is today's on-device model.
+**What we learned scoping it (2026-06-24):**
+- **FLUX.2 Klein 4B components** (from OtterPix + HF): transformer 16-bit 7.2 GB *or* 8-bit 3.3 GB
+  pre-quantized; text encoder = **Qwen3-4B** (4-bit 1.9 GB / 8-bit 4.0 GB — the SAME encoder Z-Image
+  uses, already iOS-proven); VAE = FLUX-2 small-decoder ~0.58 GB.
+- **The 4-bit gotcha:** `flux-2-swift-mlx`'s "4-bit" path *downloads the 7.2 GB bf16 and quantizes
+  on load* → loading the bf16 resident would OOM an iPhone. But **`mlx-community/flux2-klein-4b-4bit`
+  is a clean PRE-quantized 4-bit checkpoint** (mflux 0.17.5, group size 64, transformer 2.18 GB,
+  loads directly, no bf16 spike) — same sharded format the package already loads for 8-bit.
+- **Transformer architecture** (verified from the checkpoint header): double+single stream MMDiT —
+  keys `x_embedder` / `context_embedder` / `time_guidance_embed` / `transformer_blocks` (double) /
+  `single_transformer_blocks` (single) / `double_stream_modulation_{img,txt}` / `single_stream_modulation`.
+
+**Work plan:**
+1. **Cross-platform port** (the main effort, moderate — AppKit is concentrated at image boundaries):
+   `Package.swift` `[.macOS]` → add `.iOS(.v18)`; replace `NSImage`/`AppKit` with `CGImage` +
+   `ImageIO`/`CoreGraphics` in the inference path (output image must port; guard reference-image /
+   vision processing + training behind `#if os(macOS)` first — text2img doesn't need them); drop the
+   `AppEngines` macOS-only gating so `Flux2DiffusionEngine` is cross-platform.
+2. **Add a pre-quantized 4-bit load path** (analogous to the existing pre-quantized 8-bit) so iOS
+   loads `mlx-community/flux2-klein-4b-4bit` directly, avoiding the bf16 quantize-on-load spike.
+3. **Two-phase resident on iPhone** (the pipeline already has `unloadTextEncoder()`): 4-bit
+   transformer 2.18 GB loads directly. **512 fits** (≈ max(encoder 1.9, transformer 2.18 + VAE 0.58)
+   + working set ≈ 3.3 GB); **1024 is tight** (double-stream activations push toward ~4.3 GB).
+4. **Block streaming (later, Phase 2)** — only needed for 1024 full-res headroom and larger variants
+   (Klein 9B, external SSD). Give FLUX the same per-block `WeightSource` ranged-read ladder Z-Image
+   uses; peak drops to ~1 resident block + base.
+
+**Interim state (current):** FLUX is excluded from the iOS build via a thin local `AppEngines` wrapper
+package that depends on `Flux2DiffusionEngine` **only on macOS**
+(`.product(..., condition: .when(platforms: [.macOS]))`). Xcode's `platformFilter` alone does NOT
+work — SPM validates the *whole* package graph per platform, so a macOS-only package in the graph
+breaks the iOS build; the SPM-native platform-conditional product dependency (expressible only in a
+Package manifest, hence the wrapper) is the fix. Removing this gating is step 1 of the port. Z-Image
+is today's on-device model.
 
 ---
 
