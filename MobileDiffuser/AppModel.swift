@@ -8,7 +8,7 @@ import ImageIO
 import UniformTypeIdentifiers
 import DiffusionCore
 import ZImageMLX
-import AppEngines   // re-exports Flux2DiffusionEngine on macOS only (empty on iOS)
+import AppEngines   // re-exports the cross-platform Flux2DiffusionEngine facade
 
 #if os(iOS)
 import UIKit
@@ -122,12 +122,22 @@ final class AppModel {
         didSet { UserDefaults.standard.set(appearance.rawValue, forKey: "appearance") }
     }
 
-    #if os(macOS)
-    /// FLUX precision preferences (macOS only — FLUX is macOS-only), persisted across launches.
-    var fluxTransformer: Flux2FacadeEngine.FluxTransformerPrecision = .bit8 {
+    /// Default FLUX precision by device: iPhone defaults to the pre-quantized 4-bit transformer +
+    /// 4-bit encoder (the only recipe that fits the phone's memory budget; loads with no spike);
+    /// Mac defaults to 8-bit. The persisted-pref keys are shared, so saved Mac choices survive.
+    #if os(iOS)
+    static let defaultFluxTransformer: Flux2FacadeEngine.FluxTransformerPrecision = .bit4
+    static let defaultFluxEncoder: Flux2FacadeEngine.FluxEncoderPrecision = .bit4
+    #else
+    static let defaultFluxTransformer: Flux2FacadeEngine.FluxTransformerPrecision = .bit8
+    static let defaultFluxEncoder: Flux2FacadeEngine.FluxEncoderPrecision = .bit8
+    #endif
+
+    /// FLUX precision preferences, persisted across launches.
+    var fluxTransformer: Flux2FacadeEngine.FluxTransformerPrecision = AppModel.defaultFluxTransformer {
         didSet { UserDefaults.standard.set(fluxTransformer.rawValue, forKey: "fluxTransformer") }
     }
-    var fluxEncoder: Flux2FacadeEngine.FluxEncoderPrecision = .bit8 {
+    var fluxEncoder: Flux2FacadeEngine.FluxEncoderPrecision = AppModel.defaultFluxEncoder {
         didSet { UserDefaults.standard.set(fluxEncoder.rawValue, forKey: "fluxEncoder") }
     }
 
@@ -207,7 +217,6 @@ final class AppModel {
         let bytes = ByteCountFormatter.string(fromByteCount: fluxMissingBytes, countStyle: .file)
         return (fluxMissingCount < fluxActiveCount) ? "Complete · \(bytes)" : "Download · \(bytes)"
     }
-    #endif
 
     private let downloader: ModelDownloader
     private var engine: (any DiffusionEngine)?
@@ -224,12 +233,10 @@ final class AppModel {
         if let raw = UserDefaults.standard.string(forKey: "appearance"), let theme = AppTheme(rawValue: raw) {
             appearance = theme   // set in init: didSet does not fire, so no redundant write-back
         }
-        #if os(macOS)
         if let raw = UserDefaults.standard.string(forKey: "fluxTransformer"),
            let value = Flux2FacadeEngine.FluxTransformerPrecision(rawValue: raw) { fluxTransformer = value }
         if let raw = UserDefaults.standard.string(forKey: "fluxEncoder"),
            let value = Flux2FacadeEngine.FluxEncoderPrecision(rawValue: raw) { fluxEncoder = value }
-        #endif
     }
 
     var selected: DiffusionModel { models.first { $0.id == selectedID } ?? models[0] }
@@ -244,9 +251,7 @@ final class AppModel {
 
     var isBusy: Bool {
         switch phase { case .downloading, .loading, .generating: return true; default: break }
-        #if os(macOS)
         if fluxComponentDownloadID != nil { return true }   // a per-component install is in flight
-        #endif
         return false
     }
     var isFailed: Bool { if case .failed = phase { return true } else { return false } }
@@ -322,9 +327,7 @@ final class AppModel {
             let url = downloader.localURL(repoId: model.variants[0].source.huggingFaceRepo)
             try? FileManager.default.removeItem(at: url)
         case .flux2:
-            #if os(macOS)
             try? Flux2FacadeEngine.deleteWeights()
-            #endif
         default:
             break
         }
@@ -348,7 +351,6 @@ final class AppModel {
                 isDownloaded: isDownloaded(model), isActive: true)
             return ModelRecipe(axes: [], components: [comp])
         case .flux2:
-            #if os(macOS)
             _ = componentsRevision   // re-read the on-disk list when it changes
             let active = Set(fluxActiveComponentIDs)
             let comps: [RecipeComponent] = fluxComponents().map { c in
@@ -371,9 +373,6 @@ final class AppModel {
                     selectedID: fluxEncoder.rawValue),
             ]
             return ModelRecipe(axes: axes, components: comps)
-            #else
-            return ModelRecipe()
-            #endif
         default:
             return ModelRecipe()
         }
@@ -381,17 +380,13 @@ final class AppModel {
 
     /// Apply a precision-axis choice (FLUX only today).
     func setPrecision(axisID: String, optionID: String) {
-        #if os(macOS)
         if axisID == "transformer", let v = Flux2FacadeEngine.FluxTransformerPrecision(rawValue: optionID) { fluxTransformer = v }
         if axisID == "encoder", let v = Flux2FacadeEngine.FluxEncoderPrecision(rawValue: optionID) { fluxEncoder = v }
-        #endif
     }
 
     /// 0...1 progress for a component currently installing (nil if it isn't).
     func componentProgress(_ id: String, model: DiffusionModel) -> Double? {
-        #if os(macOS)
         if model.family == .flux2, fluxComponentDownloadID == id { return fluxComponentFraction }
-        #endif
         if model.family == .zImage, id == "zimage", selectedID == model.id,
            case .downloading(let f) = phase { return f }
         return nil
@@ -399,25 +394,19 @@ final class AppModel {
 
     /// A friendly error for a component whose last install failed (nil otherwise).
     func componentErrorMessage(_ id: String) -> String? {
-        #if os(macOS)
         if fluxComponentError?.id == id { return fluxComponentError?.message }
-        #endif
         return nil
     }
 
     /// Install one recipe component.
     func installComponent(_ id: String, model: DiffusionModel) async {
-        #if os(macOS)
         if model.family == .flux2 { await downloadFluxComponent(id); return }
-        #endif
         if model.family == .zImage { selectedID = model.id; await download() }
     }
 
     /// Remove one recipe component.
     func removeComponent(_ id: String, model: DiffusionModel) async {
-        #if os(macOS)
         if model.family == .flux2 { await deleteFluxComponent(id); return }
-        #endif
         if model.family == .zImage { await delete(model) }
     }
 
@@ -445,11 +434,9 @@ final class AppModel {
                     Task { @MainActor in if case .downloading = self.phase { self.phase = .downloading(fraction) } }
                 }
             case .flux2:
-                #if os(macOS)
                 try await Flux2FacadeEngine.download(transformer: fluxTransformer, encoder: fluxEncoder) { fraction in
                     Task { @MainActor in if case .downloading = self.phase { self.phase = .downloading(fraction) } }
                 }
-                #endif
             default:
                 break
             }
@@ -470,9 +457,7 @@ final class AppModel {
 
             // Reload when the model changed OR (FLUX) the chosen precision recipe changed.
             var needsReload = engine == nil || loadedID != model.id
-            #if os(macOS)
             if model.family == .flux2, loadedRecipe != fluxRecipeLabel { needsReload = true }
-            #endif
             if needsReload {
                 // Unload the previous engine BEFORE loading the new one, so two large weight sets
                 // are never resident at once (a model switch would otherwise peak ~10+ GB).
@@ -493,9 +478,7 @@ final class AppModel {
                 }
                 engine = built
                 loadedID = model.id
-                #if os(macOS)
                 loadedRecipe = (model.family == .flux2) ? fluxRecipeLabel : nil
-                #endif
             }
             // Ensure the loaded engine is actually the selected model (a failed switch leaves none).
             guard let engine, loadedID == model.id else { phase = .failed("Model not loaded"); return }
@@ -549,12 +532,9 @@ final class AppModel {
             }
             return ZImageFacadeEngine.capabilities(for: model, variant: variant, on: device)
         case .flux2:
-            #if os(macOS)
+            // The facade is phone-aware: Mac → resident, iPhone → two-phase with the pre-quantized
+            // 4-bit checkpoint, gated against the device's memory budget.
             return Flux2FacadeEngine.capabilities(for: model, variant: variant, on: device)
-            #else
-            return EngineCapabilities(runnable: false, residency: .unsupported,
-                                      estimatedPeakBytes: variant.approximateBytes, note: "macOS only")
-            #endif
         default:
             return EngineCapabilities(runnable: false, residency: .unsupported,
                                       estimatedPeakBytes: variant.approximateBytes, note: "Unsupported")
@@ -568,11 +548,7 @@ final class AppModel {
         case .flux2:
             // FLUX self-manages its weights inside the engine; ask it whether the chosen precision
             // (transformer + matching Qwen3 encoder + VAE) is on disk.
-            #if os(macOS)
             return Flux2FacadeEngine.isDownloaded(transformer: fluxTransformer, encoder: fluxEncoder)
-            #else
-            return false
-            #endif
         default:
             return false
         }
@@ -593,9 +569,7 @@ final class AppModel {
                     total += Int64(size ?? 0)
                 }
             }
-            #if os(macOS)
             total += Flux2FacadeEngine.downloadedBytes()   // FLUX weights live in the engine's own cache
-            #endif
             return total
         }.value
     }
@@ -631,11 +605,7 @@ final class AppModel {
             let dir = downloader.localURL(repoId: model.variants[0].source.huggingFaceRepo)
             return ZImageFacadeEngine(modelDirectory: dir)
         case .flux2:
-            #if os(macOS)
             return Flux2FacadeEngine(transformer: fluxTransformer, encoder: fluxEncoder)
-            #else
-            throw AppError.unsupportedOnPlatform("FLUX.2 runs on macOS only.")
-            #endif
         default:
             throw AppError.unsupportedOnPlatform("\(model.displayName) is not supported yet.")
         }

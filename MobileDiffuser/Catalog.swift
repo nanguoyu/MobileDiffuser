@@ -5,8 +5,9 @@
 import DiffusionCore
 
 /// The built-in model catalog. Z-Image runs everywhere (downloaded in-app via `ModelDownloader`);
-/// FLUX.2 is macOS-only (the `flux-2-swift-mlx` pipeline is monolithic and self-downloads on first
-/// run; macOS 14+), so its entry is compiled in only on macOS.
+/// FLUX.2 Klein 4B also runs everywhere now — the `flux-2-swift-mlx` pipeline self-downloads and
+/// self-loads its weights (Mac quantizes bf16 on load; iPhone loads the pre-quantized 4-bit
+/// checkpoint via the two-phase pipeline). Both entries ship on both platforms.
 enum Catalog {
     static let zImageTurbo = DiffusionModel(
         id: "z-image-turbo-q4",
@@ -23,31 +24,27 @@ enum Catalog {
             layout: .mfluxShard,
             source: ModelSource(huggingFaceRepo: "deepsweet/Z-Image-Turbo-6B-MLX-Q4"))])
 
-    #if os(macOS)
     static let flux2Klein = DiffusionModel(
         id: "flux2-klein-4b",
         displayName: "FLUX.2 Klein (4B)",
         family: .flux2,
         publisher: "Black Forest Labs",
-        summary: "macOS · selectable precision · Qwen3-4B encoder",
+        summary: "Selectable precision · Qwen3-4B encoder",
         license: .apache2,
         // FLUX.2 Klein 4B is step-distilled: native 4 steps, guidance 1.0 (verified vs the HF model
         // card `num_inference_steps=4` and flux-2-swift-mlx `Flux2Config.klein4B.defaultSteps == 4`).
         architecture: ArchitectureSpec(family: .flux2, latentChannels: 16,
             defaultSampler: .flowMatchEuler, defaultSteps: 4, defaultGuidance: 1.0),
+        // The facade resolves the real transformer repo per platform — Mac quantizes the
+        // black-forest-labs bf16 file on load; iPhone loads mlx-community/flux2-klein-4b-4bit
+        // (pre-quantized, no spike). `source`/`layout` here are informational: the facade self-manages
+        // its weights and ignores them. `components` feed the fit-badge memory estimate.
         variants: [ModelVariant(precision: .q4, approximateBytes: 4_600_000_000,
             components: ComponentSizes(transformer: 2_180_000_000, textEncoder: 2_260_000_000, vae: 170_000_000),
-            layout: .quantoInt,
-            source: ModelSource(huggingFaceRepo: "black-forest-labs/FLUX.2-klein-4B"))])
-    #endif
+            layout: .mfluxShard,
+            source: ModelSource(huggingFaceRepo: "mlx-community/flux2-klein-4b-4bit"))])
 
-    static var all: [DiffusionModel] {
-        #if os(macOS)
-        [zImageTurbo, flux2Klein]
-        #else
-        [zImageTurbo]
-        #endif
-    }
+    static var all: [DiffusionModel] { [zImageTurbo, flux2Klein] }
 }
 
 /// Per-model UI options for the Create controls. Derived from each model's calibrated step count so
