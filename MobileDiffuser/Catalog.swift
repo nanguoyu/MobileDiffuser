@@ -31,8 +31,10 @@ enum Catalog {
         publisher: "Black Forest Labs",
         summary: "macOS · selectable precision · Qwen3-4B encoder",
         license: .apache2,
+        // FLUX.2 Klein 4B is step-distilled: native 4 steps, guidance 1.0 (verified vs the HF model
+        // card `num_inference_steps=4` and flux-2-swift-mlx `Flux2Config.klein4B.defaultSteps == 4`).
         architecture: ArchitectureSpec(family: .flux2, latentChannels: 16,
-            defaultSampler: .flowMatchEuler, defaultSteps: 8, defaultGuidance: 1.0),
+            defaultSampler: .flowMatchEuler, defaultSteps: 4, defaultGuidance: 1.0),
         variants: [ModelVariant(precision: .q4, approximateBytes: 4_600_000_000,
             components: ComponentSizes(transformer: 2_180_000_000, textEncoder: 2_260_000_000, vae: 170_000_000),
             layout: .quantoInt,
