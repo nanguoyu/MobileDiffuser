@@ -62,7 +62,7 @@ struct SettingsView: View {
         section("Appearance", icon: "circle.lefthalf.filled") {
             Segmented(selection: $model.appearance, options: AppTheme.allCases) { $0.label }
                 .accessibilityLabel("Theme")
-            Text("System follows your device’s light/dark setting.")
+            Text("Match your system, or pin to Light or Dark.")
                 .font(.caption)
                 .foregroundStyle(Theme.textTertiary)
         }
@@ -81,31 +81,38 @@ struct SettingsView: View {
             .accessibilityElement(children: .combine)
             .accessibilityLabel("Location")
             .accessibilityValue(model.storageLocation)
-            Text("Z-Image weights download here on first use. FLUX.2 manages its own weights inside the engine on macOS.")
+            Text("Downloaded weights live here. Free up space anytime from Manage models.")
                 .font(.caption)
                 .foregroundStyle(Theme.textTertiary)
         }
     }
 
     private var deviceSection: some View {
-        section("Device & memory", icon: "memorychip") {
+        section("Device", icon: "memorychip") {
             row("Memory",
                 ByteCountFormatter.string(fromByteCount: model.device.physicalMemoryBytes, countStyle: .memory))
-            row("Working-set budget",
+            row("Available for models",
                 ByteCountFormatter.string(fromByteCount: model.device.memoryBudgetBytes, countStyle: .memory))
-            row("Class", model.device.isPhone ? "iPhone / iPad" : "Mac")
-            row("Default precision", model.device.defaultPrecision.label)
+            Text("How much a model may use is what determines whether it runs here.")
+                .font(.caption)
+                .foregroundStyle(Theme.textTertiary)
         }
     }
 
     private var aboutSection: some View {
         section("About", icon: "info.circle") {
+            row("Version", appVersion)
             row("Engine", "Pure Swift + MLX")
-            row("Models", "Z-Image Turbo · FLUX.2 Klein (macOS)")
-            Text("Open-weight, on-device generation. External-SSD streaming and an on-disk image library are on the roadmap.")
+            Text("Open-weight models, generated on-device. Nothing leaves your device.")
                 .font(.caption)
                 .foregroundStyle(Theme.textTertiary)
         }
+    }
+
+    private var appVersion: String {
+        let short = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0"
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
+        return build.map { "\(short) (\($0))" } ?? short
     }
 
     // MARK: Building blocks
