@@ -82,8 +82,9 @@ FLUX.2 Klein 4B builds and is wired up on iPhone alongside Z-Image.
    `model.safetensors.index.json` sharded layout without a `config.json`.
 3. **Phone-aware facade** (`flux2-diffusion-engine`, also `+= .iOS`): `capabilities()` returns a
    two-phase estimate on a phone (text encoder unloaded before the transformer + VAE denoise) gated
-   against the device budget; a `transformerVariantOverride` seam forces the pre-quantized 4-bit
-   checkpoint on iPhone while **Mac keeps its on-the-fly path byte-for-byte**.
+   against the device budget; a `transformerVariantOverride` seam selects the pre-quantized 4-bit
+   checkpoint. **4-bit uses the pre-quantized checkpoint on *both* platforms** (smaller download,
+   no load spike); Mac's **16-bit and 8-bit are unchanged** (16-bit bf16, 8-bit pre-quantized int8).
 4. **App un-gated** (`AppEngines` drops the macOS-only product condition + export gate; `Catalog`
    ships FLUX on both platforms pointed at the 4-bit repo; `AppModel` un-gates the whole FLUX
    surface). iPhone defaults to **4-bit transformer + 4-bit encoder**; Mac keeps 8-bit, and saved
@@ -93,8 +94,10 @@ FLUX.2 Klein 4B builds and is wired up on iPhone alongside Z-Image.
 working set ≈ 3.3 GB, under an 8 GB phone's ~4 GB budget); **1024 is tight** (double-stream activations
 push toward ~4.3 GB) and needs empirical confirmation.
 
-**Remaining validation (on-device):** download the 4-bit Klein on an iPhone and run a 512 text2img,
-confirming a coherent (non-posterized) image and the peak via `MemoryProbe`. Then probe 1024.
+**Remaining validation:** because 4-bit now uses the same pre-quantized path on Mac, the load can be
+validated on a Mac first — pick FLUX.2 Klein at 4-bit, download (2.18 GB), and run a 512 text2img,
+confirming a coherent (non-posterized) image. Then the on-device gate: the same on a real iPhone,
+checking the peak via `MemoryProbe`, and probe 1024.
 
 **Later (Phase 2):** block streaming for FLUX (the per-block `WeightSource` ranged-read ladder Z-Image
 uses) — only needed for 1024 full-res headroom and larger variants (Klein 9B); peak would drop to
