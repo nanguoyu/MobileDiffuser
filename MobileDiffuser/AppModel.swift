@@ -99,7 +99,15 @@ final class AppModel {
     var prompt = "a red panda on a mossy rock, soft morning light"
     /// Default render size: 512 on iPhone (a 1024 latent's attention + VAE-decode working set risks
     /// jetsam on a phone), 1024 on Mac. Overridden in `init()` once `device` is known.
-    var size = 1024
+    var size = 1024 {
+        didSet {
+            #if os(iOS)
+            // The standard VAE's wider decoder channels are only memory-safe up to 512 on a phone;
+            // if the size is bumped past it, fall back to the small decoder so decode can't OOM.
+            if size > 512, fluxDecoder == .standard { fluxDecoder = .small }
+            #endif
+        }
+    }
     var steps = 8
     var seedText = "42"
     var phase: Phase = .idle
@@ -133,12 +141,19 @@ final class AppModel {
     static let defaultFluxEncoder: Flux2FacadeEngine.FluxEncoderPrecision = .bit8
     #endif
 
+    /// Decoder defaults to the small VAE on both platforms — it's the lightest, fits iPhone at any
+    /// size, and is Apache-2.0 (the standard VAE is sharper but FLUX.2 Non-Commercial). Users opt in.
+    static let defaultFluxDecoder: Flux2FacadeEngine.FluxDecoderPrecision = .small
+
     /// FLUX precision preferences, persisted across launches.
     var fluxTransformer: Flux2FacadeEngine.FluxTransformerPrecision = AppModel.defaultFluxTransformer {
         didSet { UserDefaults.standard.set(fluxTransformer.rawValue, forKey: "fluxTransformer") }
     }
     var fluxEncoder: Flux2FacadeEngine.FluxEncoderPrecision = AppModel.defaultFluxEncoder {
         didSet { UserDefaults.standard.set(fluxEncoder.rawValue, forKey: "fluxEncoder") }
+    }
+    var fluxDecoder: Flux2FacadeEngine.FluxDecoderPrecision = AppModel.defaultFluxDecoder {
+        didSet { UserDefaults.standard.set(fluxDecoder.rawValue, forKey: "fluxDecoder") }
     }
 
     /// Which FLUX component (by id) is downloading + its 0...1 progress, for the detail's list.
@@ -190,7 +205,7 @@ final class AppModel {
 
     /// The component ids the currently-selected FLUX precision actually runs ("active recipe").
     var fluxActiveComponentIDs: [String] {
-        Flux2FacadeEngine.activeComponentIDs(transformer: fluxTransformer, encoder: fluxEncoder)
+        Flux2FacadeEngine.activeComponentIDs(transformer: fluxTransformer, encoder: fluxEncoder, decoder: fluxDecoder)
     }
 
     /// Total download size of the active FLUX precision (for the card's size chip).
@@ -199,8 +214,12 @@ final class AppModel {
         return fluxComponents().filter { active.contains($0.id) }.reduce(0) { $0 + $1.bytes }
     }
 
-    /// Short label of the active FLUX recipe, e.g. "8-bit · 4-bit encoder".
-    var fluxRecipeLabel: String { "\(fluxTransformer.label) · \(fluxEncoder.label) encoder" }
+    /// Short label of the active FLUX recipe, e.g. "8-bit · 4-bit encoder · Small decoder".
+    /// NOTE: this is the `loadedRecipe` reload key — the decoder MUST be included so switching
+    /// decoders forces a pipeline reload (otherwise generation would decode with the stale VAE).
+    var fluxRecipeLabel: String {
+        "\(fluxTransformer.label) · \(fluxEncoder.label) encoder · \(fluxDecoder.label)"
+    }
 
     /// Active-recipe components not yet on disk (drives the quantified Download label + tri-state).
     var fluxActiveMissing: [Flux2FacadeEngine.Flux2ComponentInfo] {
@@ -237,6 +256,8 @@ final class AppModel {
            let value = Flux2FacadeEngine.FluxTransformerPrecision(rawValue: raw) { fluxTransformer = value }
         if let raw = UserDefaults.standard.string(forKey: "fluxEncoder"),
            let value = Flux2FacadeEngine.FluxEncoderPrecision(rawValue: raw) { fluxEncoder = value }
+        if let raw = UserDefaults.standard.string(forKey: "fluxDecoder"),
+           let value = Flux2FacadeEngine.FluxDecoderPrecision(rawValue: raw) { fluxDecoder = value }
     }
 
     var selected: DiffusionModel { models.first { $0.id == selectedID } ?? models[0] }
@@ -371,6 +392,17 @@ final class AppModel {
                     options: Flux2FacadeEngine.FluxEncoderPrecision.allCases.map {
                         PrecisionOption(id: $0.rawValue, label: $0.label, note: $0.note) },
                     selectedID: fluxEncoder.rawValue),
+                PrecisionAxis(id: "decoder", title: "Decoder",
+                    options: Flux2FacadeEngine.FluxDecoderPrecision.allCases.map { d in
+                        #if os(iOS)
+                        // The standard VAE is gated to 512 on iPhone (memory); make that visible.
+                        let note = d == .standard ? "\(d.note) · 512 only" : d.note
+                        #else
+                        let note = d.note
+                        #endif
+                        return PrecisionOption(id: d.rawValue, label: d.label, note: note)
+                    },
+                    selectedID: fluxDecoder.rawValue),
             ]
             return ModelRecipe(axes: axes, components: comps)
         default:
@@ -382,6 +414,14 @@ final class AppModel {
     func setPrecision(axisID: String, optionID: String) {
         if axisID == "transformer", let v = Flux2FacadeEngine.FluxTransformerPrecision(rawValue: optionID) { fluxTransformer = v }
         if axisID == "encoder", let v = Flux2FacadeEngine.FluxEncoderPrecision(rawValue: optionID) { fluxEncoder = v }
+        if axisID == "decoder", let v = Flux2FacadeEngine.FluxDecoderPrecision(rawValue: optionID) {
+            fluxDecoder = v
+            #if os(iOS)
+            // Picking the standard VAE on a phone caps render size to 512 (its wider decoder channels
+            // would balloon at 1024 on top of the resident 4-bit transformer).
+            if v == .standard, size > 512 { size = 512 }
+            #endif
+        }
     }
 
     /// 0...1 progress for a component currently installing (nil if it isn't).
@@ -434,7 +474,7 @@ final class AppModel {
                     Task { @MainActor in if case .downloading = self.phase { self.phase = .downloading(fraction) } }
                 }
             case .flux2:
-                try await Flux2FacadeEngine.download(transformer: fluxTransformer, encoder: fluxEncoder) { fraction in
+                try await Flux2FacadeEngine.download(transformer: fluxTransformer, encoder: fluxEncoder, decoder: fluxDecoder) { fraction in
                     Task { @MainActor in if case .downloading = self.phase { self.phase = .downloading(fraction) } }
                 }
             default:
@@ -548,7 +588,7 @@ final class AppModel {
         case .flux2:
             // FLUX self-manages its weights inside the engine; ask it whether the chosen precision
             // (transformer + matching Qwen3 encoder + VAE) is on disk.
-            return Flux2FacadeEngine.isDownloaded(transformer: fluxTransformer, encoder: fluxEncoder)
+            return Flux2FacadeEngine.isDownloaded(transformer: fluxTransformer, encoder: fluxEncoder, decoder: fluxDecoder)
         default:
             return false
         }
@@ -605,7 +645,7 @@ final class AppModel {
             let dir = downloader.localURL(repoId: model.variants[0].source.huggingFaceRepo)
             return ZImageFacadeEngine(modelDirectory: dir)
         case .flux2:
-            return Flux2FacadeEngine(transformer: fluxTransformer, encoder: fluxEncoder)
+            return Flux2FacadeEngine(transformer: fluxTransformer, encoder: fluxEncoder, decoder: fluxDecoder)
         default:
             throw AppError.unsupportedOnPlatform("\(model.displayName) is not supported yet.")
         }
