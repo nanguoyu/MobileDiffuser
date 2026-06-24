@@ -92,6 +92,8 @@ final class AppModel {
     var tab: Tab = .create
     var selectedID: String = Catalog.all.first!.id
     var prompt = "a red panda on a mossy rock, soft morning light"
+    /// Default render size: 512 on iPhone (a 1024 latent's attention + VAE-decode working set risks
+    /// jetsam on a phone), 1024 on Mac. Overridden in `init()` once `device` is known.
     var size = 1024
     var steps = 8
     var seedText = "42"
@@ -210,6 +212,7 @@ final class AppModel {
             for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
         let base = (support ?? URL(fileURLWithPath: NSTemporaryDirectory())).appending(component: "MobileDiffuser")
         downloader = ModelDownloader(downloadBase: base)
+        if device.isPhone { size = 512 }   // safe default on a phone; the user can still pick 768/1024
         if let raw = UserDefaults.standard.string(forKey: "appearance"), let theme = AppTheme(rawValue: raw) {
             appearance = theme   // set in init: didSet does not fire, so no redundant write-back
         }
