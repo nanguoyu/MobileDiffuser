@@ -90,7 +90,12 @@ final class AppModel {
     let models = Catalog.all
     let device = DeviceTier.current
     var tab: Tab = .create
-    var selectedID: String = Catalog.all.first!.id
+    var selectedID: String = Catalog.all.first!.id {
+        didSet {
+            guard selectedID != oldValue else { return }
+            applyModelDefaults()   // each model has its own native step count + size
+        }
+    }
     var prompt = "a red panda on a mossy rock, soft morning light"
     /// Default render size: 512 on iPhone (a 1024 latent's attention + VAE-decode working set risks
     /// jetsam on a phone), 1024 on Mac. Overridden in `init()` once `device` is known.
@@ -100,6 +105,9 @@ final class AppModel {
     var phase: Phase = .idle
     var image: CGImage?
     var history: [Generation] = []
+    /// Transient confirmation banner (e.g. "Saved to Photos"); auto-clears after a couple seconds.
+    var toast: String?
+    @ObservationIgnored private var toastTask: Task<Void, Never>?
     /// Peak resident memory (phys_footprint, the value jetsam checks) seen during the last
     /// generation — surfaced on iPhone so the streaming residency is visible. 0 until a run happens.
     var peakResidentBytes: UInt64 = 0
@@ -212,7 +220,7 @@ final class AppModel {
             for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
         let base = (support ?? URL(fileURLWithPath: NSTemporaryDirectory())).appending(component: "MobileDiffuser")
         downloader = ModelDownloader(downloadBase: base)
-        if device.isPhone { size = 512 }   // safe default on a phone; the user can still pick 768/1024
+        applyModelDefaults()   // steps + size default to the initial model's native values
         if let raw = UserDefaults.standard.string(forKey: "appearance"), let theme = AppTheme(rawValue: raw) {
             appearance = theme   // set in init: didSet does not fire, so no redundant write-back
         }
@@ -267,6 +275,31 @@ final class AppModel {
         inFlight = true; defer { inFlight = false }
         await downloadSelected()
         componentsRevision += 1   // model-level download changed the on-disk component set
+    }
+
+    /// Reset Steps + Size to the selected model's native values, clamped per device (a phone defaults
+    /// to 512 for memory). Called on launch and whenever the model changes, so the controls always
+    /// reflect what the current model is calibrated for rather than a fixed global set.
+    func applyModelDefaults() {
+        steps = selected.defaultStepCount
+        size = device.isPhone ? min(512, selected.nativeSize) : selected.nativeSize
+    }
+
+    /// Dismiss the current result and return the canvas to its empty state (the "×" on a finished
+    /// generation). The image stays in the Library; this only clears the live canvas.
+    func clearResult() {
+        image = nil
+        switch phase { case .done, .failed: phase = .idle; default: break }
+    }
+
+    /// Show a transient confirmation banner that auto-dismisses.
+    func showToast(_ message: String) {
+        toast = message
+        toastTask?.cancel()
+        toastTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 2_200_000_000)
+            if !Task.isCancelled { toast = nil }
+        }
     }
 
     func generate() async {
@@ -625,10 +658,15 @@ final class AppModel {
     func exportImage(_ cg: CGImage) {
         let image = UIImage(cgImage: cg)
         PHPhotoLibrary.requestAuthorization(for: .addOnly) { status in
-            guard status == .authorized || status == .limited else { return }
+            guard status == .authorized || status == .limited else {
+                Task { @MainActor in self.showToast("Photos access denied") }
+                return
+            }
             PHPhotoLibrary.shared().performChanges {
                 PHAssetChangeRequest.creationRequestForAsset(from: image)
-            } completionHandler: { _, _ in }
+            } completionHandler: { success, _ in
+                Task { @MainActor in self.showToast(success ? "Saved to Photos" : "Couldn’t save") }
+            }
         }
     }
     #endif

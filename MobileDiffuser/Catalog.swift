@@ -47,3 +47,21 @@ enum Catalog {
         #endif
     }
 }
+
+/// Per-model UI options for the Create controls. Derived from each model's calibrated step count so
+/// the choices scale to any future model instead of a single hardcoded global set — distilled models
+/// are step-sensitive, so the options stay centered on the model's native count.
+extension DiffusionModel {
+    /// Recommended (native) sampling steps for this model.
+    var defaultStepCount: Int { architecture.defaultSteps }
+
+    /// Step options shown in Create: a fast / native / quality triad around the calibrated count.
+    var stepChoices: [Int] {
+        let n = max(2, architecture.defaultSteps)
+        return Array(Set([max(2, n / 2), n, n * 2])).sorted()
+    }
+
+    /// Render-size options (px). Current models handle this square range; native is the top.
+    var sizeChoices: [Int] { [512, 768, 1024] }
+    var nativeSize: Int { 1024 }
+}

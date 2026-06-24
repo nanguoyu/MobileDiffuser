@@ -113,6 +113,21 @@ struct HeroCanvas: View {
                     .padding(Theme.Space.lg)
             }
         }
+        // Dismiss "×" on a finished result — clears the canvas back to empty (the image stays in
+        // Library). Lets the user move on to the next prompt without the old result lingering.
+        .overlay(alignment: .topTrailing) {
+            if case .result = state {
+                Button { model.clearResult() } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.title2)
+                        .symbolRenderingMode(.palette)
+                        .foregroundStyle(.white, .black.opacity(0.35))
+                        .padding(Theme.Space.md)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Dismiss result")
+            }
+        }
         #if os(macOS)
         .frame(maxWidth: 880)
         #endif
@@ -167,10 +182,10 @@ struct PromptBar: View {
             }
             HStack(alignment: .bottom, spacing: Theme.Space.lg) {
                 labeledControl("Size") {
-                    Segmented(selection: $model.size, options: [512, 768, 1024]) { "\($0)" }
+                    Segmented(selection: $model.size, options: model.selected.sizeChoices) { "\($0)" }
                 }
                 labeledControl("Steps") {
-                    Segmented(selection: $model.steps, options: [4, 8, 16]) { "\($0)" }
+                    Segmented(selection: $model.steps, options: model.selected.stepChoices) { "\($0)" }
                 }
                 labeledControl("Seed") {
                     SeedField(text: $model.seedText)

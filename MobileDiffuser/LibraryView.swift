@@ -138,6 +138,21 @@ private struct GenerationDetail: View {
             content
         }
         .background(Theme.bg)
+        // Confirmation banner after Save to Photos / Export (driven by model.showToast).
+        .overlay(alignment: .bottom) {
+            if let toast = model.toast {
+                Label(toast, systemImage: "checkmark.circle.fill")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(Theme.textPrimary)
+                    .padding(.horizontal, Theme.Space.lg).padding(.vertical, Theme.Space.md)
+                    .background(Theme.surface, in: Capsule())
+                    .overlay(Capsule().strokeBorder(Theme.hairline))
+                    .shadow(color: .black.opacity(0.15), radius: 12, y: 4)
+                    .padding(.bottom, Theme.Space.xl)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .animation(Motion.canvas, value: model.toast)
     }
 
     #if os(macOS)
@@ -273,7 +288,9 @@ private struct GenerationDetail: View {
             document: PNGDocument(data: model.pngData(gen.image)),
             contentType: .png,
             defaultFilename: exportFilename
-        ) { _ in }
+        ) { result in
+            if case .success = result { model.showToast("Image exported") }
+        }
         #endif
     }
 
