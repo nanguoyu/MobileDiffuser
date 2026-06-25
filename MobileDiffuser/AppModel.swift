@@ -54,7 +54,24 @@ struct Generation: Identifiable {
     let steps: Int
     let seed: UInt64
     let duration: TimeInterval
+    /// Model-specific recipe rows captured at generation time (FLUX: transformer/encoder/decoder;
+    /// Z-Image: precision; future families: their own). Generic so the Library detail can show whatever
+    /// settings a model has without hardcoding any one model's fields onto `Generation`.
+    let settings: [GenerationSetting]
     let date = Date()
+}
+
+/// One model-specific setting recorded with a generation — shown in the Library detail, and (when it
+/// carries an axis) restorable by "Reuse settings". Decoupling these from `Generation`'s fixed fields
+/// is what lets each model family contribute different settings, now and in the future.
+struct GenerationSetting: Identifiable, Hashable {
+    var id: String { label }
+    let label: String       // e.g. "Decoder"
+    let value: String       // e.g. "Standard VAE"
+    /// The recipe axis id + option rawValue this came from, so Reuse can restore the exact recipe.
+    /// `nil` for informational rows that aren't a selectable axis (e.g. Z-Image's fixed precision).
+    var axisID: String? = nil
+    var optionID: String? = nil
 }
 
 /// Format a generation time for display: "12.4s" under a minute, "1m 05s" above.
@@ -551,7 +568,7 @@ final class AppModel {
             phase = .done
             history.insert(Generation(image: cgImage, prompt: prompt, modelID: model.id,
                                       modelName: model.displayName, size: size, steps: steps, seed: seed,
-                                      duration: elapsed),
+                                      duration: elapsed, settings: generationSettings(for: model)),
                            at: 0)
         } catch {
             phase = .failed(String(describing: error))
@@ -614,10 +631,36 @@ final class AppModel {
         }.value
     }
 
-    /// Apply a past generation's settings and jump to Create.
+    /// The model-specific recipe rows to record with a generation (and show in the Library detail).
+    /// Extensible per family: each contributes whatever settings are meaningful; a family with nothing
+    /// extra just falls through to the common Model/Size/Steps/Seed rows. New families add a case here.
+    func generationSettings(for model: DiffusionModel) -> [GenerationSetting] {
+        switch model.family {
+        case .flux2:
+            return [
+                GenerationSetting(label: "Transformer", value: fluxTransformer.label,
+                                  axisID: "transformer", optionID: fluxTransformer.rawValue),
+                GenerationSetting(label: "Text encoder", value: fluxEncoder.label,
+                                  axisID: "encoder", optionID: fluxEncoder.rawValue),
+                GenerationSetting(label: "Decoder", value: fluxDecoder.label,
+                                  axisID: "decoder", optionID: fluxDecoder.rawValue),
+            ]
+        case .zImage:
+            // Z-Image ships a single fixed-precision variant; surface it so the readout is complete.
+            return model.variants.first.map { [GenerationSetting(label: "Precision", value: $0.precision.label)] } ?? []
+        default:
+            return []   // future families (e.g. qwenImage) add their own rows here
+        }
+    }
+
+    /// Apply a past generation's settings and jump to Create — including the model-specific recipe
+    /// (precision / decoder) so the next run reproduces this image, not just the prompt/size/seed.
     func reuse(_ g: Generation) {
         prompt = g.prompt; size = g.size; steps = g.steps; seedText = String(g.seed)
         if models.contains(where: { $0.id == g.modelID }) { selectedID = g.modelID }
+        for s in g.settings {
+            if let axisID = s.axisID, let optionID = s.optionID { setPrecision(axisID: axisID, optionID: optionID) }
+        }
         tab = .create
     }
 

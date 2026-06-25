@@ -238,6 +238,8 @@ private struct GenerationDetail: View {
             sectionHeader("DETAILS")
             VStack(alignment: .leading, spacing: Theme.Space.sm) {
                 row("Model", gen.modelName)
+                // Model-specific recipe (FLUX: transformer/encoder/decoder; Z-Image: precision; …).
+                ForEach(gen.settings) { row($0.label, $0.value) }
                 row("Size", "\(gen.size)×\(gen.size)")
                 row("Steps", "\(gen.steps)")
                 row("Seed", "\(gen.seed)")
