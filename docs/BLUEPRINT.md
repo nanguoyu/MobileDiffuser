@@ -134,11 +134,12 @@ The app talks only to `DiffusionEngine`. There are **two engine shapes** behind 
 - **`MLXDiffusionEngine`** (in core, iOS + macOS) — drives any *block-streamable*
   `DiffusionArchitecture` and applies the partial-load ladder. This is the path for Z-Image
   and the iPhone.
-- **A whole-pipeline facade engine** (macOS-only) — wraps a monolithic pipeline that owns its
-  own denoise loop. `flux-2-swift-mlx` is exactly this: it is **macOS-15-only** and exposes one
-  `Flux2Pipeline.generateTextToImage(...)` with no per-block access, so it cannot be
-  block-streamed. It becomes a `DiffusionEngine` facade in the macOS target — *not* in core
-  (core must stay iOS-buildable, and flux-2-swift-mlx can't build for iOS).
+- **Whole-pipeline facade engines** — wrap monolithic pipelines that own their own denoise
+  loop. FLUX.2 is this shape: it exposes `Flux2Pipeline.generateTextToImage(...)` with no
+  per-block access, so it cannot be block-streamed by the generic engine. It is now
+  cross-platform after the guarded AppKit port, and the iPhone path uses a phone-aware two-phase
+  4-bit load plan. Z-Image also has a resident facade for macOS, while iPhone uses the generic
+  block-streaming path.
 
 `MLXDiffusionEngine` consumes the `DiffusionArchitecture` seam each model package implements:
 
@@ -236,12 +237,19 @@ shared components.
   (streaming denoise loop), `FlowMatchEulerSampler`, `SafetensorsWeightSource`,
   `ImageConversion`, `MemoryGovernor`/`DeviceTier`/`MemoryProbe`. Pure-logic tests
   (governor decisions, sampler schedule) pass in CI; MLX-eval tests pass in Xcode (a headless
-  CI box has no Metal lib). Remaining: real Z-Image S3-DiT architecture, the macOS FLUX
-  facade engine, MLX cache governance, and on-device memory measurement.
+  CI box has no Metal lib).
+  **Status (2026-06-25):** Z-Image S3-DiT, Qwen3-4B, VAE, ranged weight source, streaming
+  block lifecycle, and resident-vs-streaming parity gates have landed. Z-Image Turbo runs
+  on iPhone 16 Pro via block streaming at about 2.2 GB peak. FLUX.2 Klein 4B runs on iPhone
+  through the cross-platform facade and pre-quantized 4-bit checkpoint at about 4.3 GB peak
+  for 512px / 4 steps / small decoder.
 - **Phase 1 — Mac app.** Dark-studio shell, Models gallery + detail/download (resumable),
   Create workspace, Library, memory governor, persisted image cache.
 - **Phase 2 — iPhone.** Same shell adapted (TabView), `MemoryProbe` gating,
   increased-memory-limit entitlement, internal-storage streaming.
+  **Status:** the shell builds for iPhone and the current 512px Z-Image / FLUX paths are
+  validated on device. 1024px FLUX standard-VAE and larger variants remain cautious because
+  VAE decode and attention activations dominate peak memory.
 - **Phase 3 — external SSD + breadth.** `WeightSource` ranged-read path (USB-C SSD), more
   model packages (one public repo each), generation queue, downloader hardening.
 
@@ -249,8 +257,9 @@ shared components.
 
 ## 8. Migration — what leaves this repo
 
-The original CoreML app is removed once the new path runs (tracked separately; not deleted
-until confirmed):
+The original CoreML app has been removed from the running app. Historical Core ML notes remain
+only as attribution/background; current implementation work should start from the MLX app and
+packages:
 
 - `MobileDiffuser/ContentView.swift`, `SD3PipelineLoader.swift`, `ModelResourceManager.swift`
   — replaced by the new shell + `swift-diffusion-core`.
