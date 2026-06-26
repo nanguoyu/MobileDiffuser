@@ -71,10 +71,12 @@ struct HeroCanvas: View {
     @Bindable var model: AppModel
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    private enum CanvasState { case generating(Int, Int), loading, result(CGImage), empty }
+    private enum CanvasState { case generating(Int, Int), pausing(Int, Int), paused(Int, Int), loading, result(CGImage), empty }
 
     private var state: CanvasState {
         if case .generating(let s, let t) = model.phase { return .generating(s, t) }
+        if case .pausing(let s, let t) = model.phase { return .pausing(s, t) }
+        if case .paused(let s, let t) = model.phase { return .paused(s, t) }
         if case .downloading = model.phase { return .loading }
         if case .loading = model.phase { return .loading }
         if let cg = model.image { return .result(cg) }
@@ -93,6 +95,10 @@ struct HeroCanvas: View {
                     .transition(.opacity.combined(with: .scale(scale: 0.98)))
             case .generating(let s, let t):
                 placeholder(icon: "sparkles", pulsing: true, text: "Generating… step \(s)/\(t)")
+            case .pausing(let s, let t):
+                placeholder(icon: "pause.circle", pulsing: true, text: "Pausing after step \(s)/\(t)…")
+            case .paused(let s, let t):
+                placeholder(icon: "pause.circle.fill", pulsing: false, text: "Paused at step \(s)/\(t)")
             case .loading:
                 placeholder(icon: loadingIcon, pulsing: true, text: model.statusText)
             case .empty:
@@ -107,10 +113,50 @@ struct HeroCanvas: View {
         }
         // Progress rail renders over the result image too, so progress stays visible.
         .overlay(alignment: .bottom) {
-            if case .generating(let s, let t) = model.phase {
-                ProgressView(value: Double(s), total: Double(t))
-                    .tint(Theme.accent)
-                    .padding(Theme.Space.lg)
+            if let progress = generationProgress {
+                VStack(spacing: Theme.Space.sm) {
+                    ProgressView(value: Double(progress.step), total: Double(progress.total))
+                        .tint(Theme.accent)
+                    HStack(spacing: Theme.Space.sm) {
+                        Button { model.isGenerationPaused ? model.resumeGeneration() : model.pauseGeneration() } label: {
+                            Image(systemName: model.isGenerationPaused ? "play.fill" : "pause.fill")
+                                .frame(width: 32, height: 32)
+                        }
+                        .buttonStyle(.plain)
+                        .background(Theme.surface2, in: Circle())
+                        .accessibilityLabel(model.isGenerationPaused ? "Resume generation" : "Pause generation")
+
+                        Button { model.cancelOperation() } label: {
+                            Image(systemName: "xmark")
+                                .frame(width: 32, height: 32)
+                        }
+                        .buttonStyle(.plain)
+                        .background(Theme.surface2, in: Circle())
+                        .accessibilityLabel("Cancel generation")
+                    }
+                }
+                .padding(Theme.Space.lg)
+            } else if model.isBusy, case .downloading(let fraction) = model.phase {
+                VStack(spacing: Theme.Space.sm) {
+                    ProgressView(value: fraction).tint(Theme.accent)
+                    Button { model.cancelOperation() } label: {
+                        Image(systemName: "pause.fill")
+                            .frame(width: 32, height: 32)
+                    }
+                    .buttonStyle(.plain)
+                    .background(Theme.surface2, in: Circle())
+                    .accessibilityLabel("Pause download")
+                }
+                .padding(Theme.Space.lg)
+            } else if model.isBusy, case .loading = model.phase {
+                Button { model.cancelOperation() } label: {
+                    Image(systemName: "xmark")
+                        .frame(width: 32, height: 32)
+                }
+                .buttonStyle(.plain)
+                .background(Theme.surface2, in: Circle())
+                .padding(Theme.Space.lg)
+                .accessibilityLabel("Cancel loading")
             }
         }
         // Dismiss "×" on a finished result — clears the canvas back to empty (the image stays in
@@ -141,6 +187,15 @@ struct HeroCanvas: View {
         return "sparkles"
     }
 
+    private var generationProgress: (step: Int, total: Int)? {
+        switch model.phase {
+        case .generating(let s, let t), .pausing(let s, let t), .paused(let s, let t):
+            return (s, t)
+        default:
+            return nil
+        }
+    }
+
     private func placeholder(icon: String, pulsing: Bool, text: String) -> some View {
         VStack(spacing: Theme.Space.md) {
             Image(systemName: icon)
@@ -168,7 +223,7 @@ struct PromptBar: View {
                     .background(Theme.surface2, in: RoundedRectangle(cornerRadius: Theme.Radius.field, style: .continuous))
                     .overlay(RoundedRectangle(cornerRadius: Theme.Radius.field, style: .continuous).strokeBorder(Theme.hairline))
 
-                Button { Task { await model.generate() } } label: {
+                Button { model.startGenerate() } label: {
                     Image(systemName: "arrow.up").font(.headline)
                         .foregroundStyle(Theme.onAccent)
                         .frame(width: 44, height: 44)
@@ -183,12 +238,15 @@ struct PromptBar: View {
             HStack(alignment: .bottom, spacing: Theme.Space.lg) {
                 labeledControl("Size") {
                     Segmented(selection: $model.size, options: model.selected.sizeChoices) { "\($0)" }
+                        .disabled(model.isBusy)
                 }
                 labeledControl("Steps") {
                     Segmented(selection: $model.steps, options: model.selected.stepChoices) { "\($0)" }
+                        .disabled(model.isBusy)
                 }
                 labeledControl("Seed") {
                     SeedField(text: $model.seedText)
+                        .disabled(model.isBusy)
                 }
                 .frame(maxWidth: 120)
             }

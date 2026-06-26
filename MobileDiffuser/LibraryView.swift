@@ -5,10 +5,9 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// Your generated images. The grid shows every in-session generation (newest first); tapping a
+/// Your generated images. The grid shows every saved local generation (newest first); tapping a
 /// thumbnail opens a detail sheet with its prompt, params, a one-tap "Reuse settings", and an
-/// export action (Save to Photos on iOS / Export PNG on macOS). In-session only for now — on-disk
-/// persistence is a follow-up. Drives off a single shared `AppModel`; modifies no model state.
+/// export action (Save to Photos on iOS / Export PNG on macOS).
 struct LibraryView: View {
     @Bindable var model: AppModel
     @State private var selected: Generation?
@@ -123,6 +122,7 @@ private struct GenerationDetail: View {
     @Bindable var model: AppModel
     let gen: Generation
     @Environment(\.dismiss) private var dismiss
+    @State private var confirmDelete = false
 
     #if os(macOS)
     @State private var exporting = false
@@ -153,6 +153,16 @@ private struct GenerationDetail: View {
             }
         }
         .animation(Motion.canvas, value: model.toast)
+        .confirmationDialog("Delete this generation?",
+                            isPresented: $confirmDelete, titleVisibility: .visible) {
+            Button("Delete", role: .destructive) {
+                model.deleteGeneration(gen)
+                dismiss()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This removes the saved PNG from the local Library.")
+        }
     }
 
     #if os(macOS)
@@ -265,6 +275,12 @@ private struct GenerationDetail: View {
             .accessibilityHint("Loads this prompt and settings into Create")
 
             saveButton
+
+            Button(role: .destructive) { confirmDelete = true } label: {
+                Label("Delete", systemImage: "trash")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(StudioButtonStyle(.secondary))
         }
     }
 

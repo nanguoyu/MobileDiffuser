@@ -131,7 +131,7 @@ struct ModelAction: View {
             }
             .buttonStyle(StudioButtonStyle(.primary))
         } else {
-            Button { Task { await model.installRecipe(m) } } label: {
+            Button { model.startInstallRecipe(m) } label: {
                 Label(downloadLabel(recipe), systemImage: "arrow.down.circle")
             }
             .buttonStyle(StudioButtonStyle(.secondary)).disabled(model.isBusy)
@@ -306,7 +306,7 @@ private struct ModelDetail: View {
         if let f = model.componentProgress(c.id, model: item) {
             ProgressView(value: f).frame(width: 54).tint(Theme.accent)
         } else if model.componentErrorMessage(c.id) != nil {
-            Button { Task { await model.installComponent(c.id, model: item) } } label: {
+            Button { model.startInstallComponent(c.id, model: item) } label: {
                 pill("Retry", icon: "arrow.clockwise", color: Theme.danger)
             }
             .buttonStyle(.plain).disabled(model.isBusy).accessibilityLabel("Retry \(c.title)")
@@ -316,7 +316,7 @@ private struct ModelDetail: View {
             }
             .buttonStyle(.plain).disabled(model.isBusy).accessibilityLabel("Delete \(c.title)")
         } else {
-            Button { Task { await model.installComponent(c.id, model: item) } } label: {
+            Button { model.startInstallComponent(c.id, model: item) } label: {
                 pill("Get", icon: "arrow.down", color: Theme.accent)
             }
             .buttonStyle(.plain).disabled(model.isBusy).accessibilityLabel("Download \(c.title)")
@@ -339,7 +339,7 @@ private struct ModelDetail: View {
                     Label("Use in Create", systemImage: "wand.and.stars").frame(maxWidth: .infinity)
                 }.buttonStyle(StudioButtonStyle(.primary))
             } else if recipe.components.count > 1 && !isDownloadingModel {
-                Button { Task { await model.installRecipe(item) } } label: {
+                Button { model.startInstallRecipe(item) } label: {
                     Label(footerDownloadLabel(recipe), systemImage: "arrow.down.circle").frame(maxWidth: .infinity)
                 }.buttonStyle(StudioButtonStyle(.primary)).disabled(model.isBusy)
             }

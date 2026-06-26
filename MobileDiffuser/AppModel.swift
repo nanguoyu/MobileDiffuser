@@ -43,9 +43,9 @@ enum AppTheme: String, CaseIterable, Identifiable {
     }
 }
 
-/// One finished generation, kept in the Library (in-session for now).
-struct Generation: Identifiable {
-    let id = UUID()
+/// One finished generation, kept in the durable local Library.
+struct Generation: Identifiable, @unchecked Sendable {
+    let id: UUID
     let image: CGImage
     let prompt: String
     let modelID: String
@@ -58,13 +58,32 @@ struct Generation: Identifiable {
     /// Z-Image: precision; future families: their own). Generic so the Library detail can show whatever
     /// settings a model has without hardcoding any one model's fields onto `Generation`.
     let settings: [GenerationSetting]
-    let date = Date()
+    let date: Date
+    /// PNG filename under Library/images. New records default to `<uuid>.png`.
+    let imageFilename: String?
+
+    init(id: UUID = UUID(), image: CGImage, prompt: String, modelID: String, modelName: String,
+         size: Int, steps: Int, seed: UInt64, duration: TimeInterval,
+         settings: [GenerationSetting], date: Date = Date(), imageFilename: String? = nil) {
+        self.id = id
+        self.image = image
+        self.prompt = prompt
+        self.modelID = modelID
+        self.modelName = modelName
+        self.size = size
+        self.steps = steps
+        self.seed = seed
+        self.duration = duration
+        self.settings = settings
+        self.date = date
+        self.imageFilename = imageFilename
+    }
 }
 
 /// One model-specific setting recorded with a generation — shown in the Library detail, and (when it
 /// carries an axis) restorable by "Reuse settings". Decoupling these from `Generation`'s fixed fields
 /// is what lets each model family contribute different settings, now and in the future.
-struct GenerationSetting: Identifiable, Hashable {
+struct GenerationSetting: Identifiable, Hashable, Codable, Sendable {
     var id: String { label }
     let label: String       // e.g. "Decoder"
     let value: String       // e.g. "Standard VAE"
@@ -93,6 +112,10 @@ final class AppModel {
         case downloading(Double)
         case loading(Double)
         case generating(Int, Int)
+        case pausing(Int, Int)
+        case paused(Int, Int)
+        case cancelling
+        case cancelled
         case done
         case failed(String)
     }
@@ -192,15 +215,27 @@ final class AppModel {
     /// Download one FLUX component by id (one at a time; shares the download/generate lock).
     func downloadFluxComponent(_ id: String) async {
         guard !inFlight else { return }
-        inFlight = true; defer { inFlight = false }
+        let operationID = UUID()
+        activeOperationID = operationID
+        inFlight = true; defer { inFlight = false; activeOperationID = nil }
+        await downloadFluxComponentUnlocked(id, operationID: operationID)
+    }
+
+    private func downloadFluxComponentUnlocked(_ id: String, operationID: UUID) async {
         fluxComponentError = nil
         fluxComponentDownloadID = id; fluxComponentFraction = 0
         defer { fluxComponentDownloadID = nil; componentsRevision += 1 }
         do {
             try await Flux2FacadeEngine.downloadComponent(id) { fraction in
                 // Ignore a stale callback from a previous download.
-                Task { @MainActor in if self.fluxComponentDownloadID == id { self.fluxComponentFraction = fraction } }
+                Task { @MainActor in
+                    if self.activeOperationID == operationID, self.fluxComponentDownloadID == id {
+                        self.fluxComponentFraction = fraction
+                    }
+                }
             }
+        } catch is CancellationError {
+            phase = .cancelled
         } catch {
             fluxComponentError = (id, Self.friendlyDownloadError(error))
         }
@@ -256,16 +291,22 @@ final class AppModel {
     }
 
     private let downloader: ModelDownloader
+    @ObservationIgnored private let libraryStore: LibraryStore
     private var engine: (any DiffusionEngine)?
     private var loadedID: String?
     private var loadedRecipe: String?   // FLUX: the active recipe label that's loaded, for reload-on-precision-change
     private var inFlight = false   // reentrancy lock: one download/generate at a time
+    @ObservationIgnored private var generationTask: Task<Void, Never>?
+    @ObservationIgnored private var operationTask: Task<Void, Never>?
+    @ObservationIgnored private var generationControl: GenerationControl?
+    @ObservationIgnored private var activeOperationID: UUID?
 
     init() {
         let support = try? FileManager.default.url(
             for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
         let base = (support ?? URL(fileURLWithPath: NSTemporaryDirectory())).appending(component: "MobileDiffuser")
         downloader = ModelDownloader(downloadBase: base)
+        libraryStore = LibraryStore(baseURL: base)
         // Restore the last-selected model BEFORE applying its defaults. An assignment inside init does
         // not fire the `didSet`, so set it directly and let the explicit applyModelDefaults() below pick
         // up the restored selection (validate it still exists in the catalog).
@@ -283,7 +324,41 @@ final class AppModel {
            let value = Flux2FacadeEngine.FluxEncoderPrecision(rawValue: raw) { fluxEncoder = value }
         if let raw = UserDefaults.standard.string(forKey: "fluxDecoder"),
            let value = Flux2FacadeEngine.FluxDecoderPrecision(rawValue: raw) { fluxDecoder = value }
+        Task { [libraryStore] in
+            let restored = await libraryStore.load()
+            await MainActor.run {
+                // Merge, don't replace: a generation or delete that completed before this async restore
+                // resolved must not be clobbered. Keep the in-session entries and add the disk records
+                // not already present, newest first.
+                let existing = Set(self.history.map(\.id))
+                self.history = (self.history + restored.filter { !existing.contains($0.id) })
+                    .sorted { $0.date > $1.date }
+            }
+        }
+        #if os(iOS)
+        // A paused generation pins the transformer + GPU graph (multiple GB) resident with no way for
+        // iOS to reclaim it; under memory pressure or in the background that's a jetsam kill (looks like
+        // a crash). Cancel a paused run on either signal — the user can re-generate.
+        Task { [weak self] in
+            for await _ in NotificationCenter.default.notifications(named: UIApplication.didReceiveMemoryWarningNotification) {
+                await MainActor.run { self?.cancelPausedRunUnderMemoryPressure() }
+            }
+        }
+        Task { [weak self] in
+            for await _ in NotificationCenter.default.notifications(named: UIApplication.didEnterBackgroundNotification) {
+                await MainActor.run { self?.cancelPausedRunUnderMemoryPressure() }
+            }
+        }
+        #endif
     }
+
+    #if os(iOS)
+    /// Cancel a PAUSED generation under memory pressure / backgrounding so a multi-GB paused run isn't
+    /// jetsammed. An active (un-paused) run is left to finish.
+    private func cancelPausedRunUnderMemoryPressure() {
+        if isGenerationPaused { cancelOperation() }
+    }
+    #endif
 
     var selected: DiffusionModel { models.first { $0.id == selectedID } ?? models[0] }
 
@@ -296,7 +371,7 @@ final class AppModel {
     var isDownloaded: Bool { isDownloaded(selected) }
 
     var isBusy: Bool {
-        switch phase { case .downloading, .loading, .generating: return true; default: break }
+        switch phase { case .downloading, .loading, .generating, .pausing, .paused, .cancelling: return true; default: break }
         if fluxComponentDownloadID != nil { return true }   // a per-component install is in flight
         return false
     }
@@ -308,6 +383,10 @@ final class AppModel {
         case .downloading(let f): return "Downloading… \(Int(f * 100))%"
         case .loading(let f): return "Loading into memory… \(Int(f * 100))%"
         case .generating(let s, let t): return "Generating… step \(s)/\(t)"
+        case .pausing(let s, let t): return "Pausing after step \(s)/\(t)…"
+        case .paused(let s, let t): return "Paused at step \(s)/\(t)"
+        case .cancelling: return "Cancelling…"
+        case .cancelled: return "Cancelled"
         case .done: return lastGenerationSeconds.map { "Done in \(formatDuration($0))" } ?? "Done"
         case .failed(let m): return "Failed: \(m)"
         }
@@ -324,8 +403,18 @@ final class AppModel {
     func download() async {
         guard !inFlight else { return }
         inFlight = true; defer { inFlight = false }
-        await downloadSelected()
-        componentsRevision += 1   // model-level download changed the on-disk component set
+        let operationID = UUID()
+        activeOperationID = operationID
+        defer { activeOperationID = nil }
+        do {
+            try await downloadSelected(operationID: operationID)
+            componentsRevision += 1   // model-level download changed the on-disk component set
+        } catch is CancellationError {
+            phase = .cancelled
+            componentsRevision += 1
+        } catch {
+            phase = .failed(String(describing: error))
+        }
     }
 
     /// Reset Steps + Size to the selected model's native values, clamped per device (a phone defaults
@@ -340,7 +429,7 @@ final class AppModel {
     /// generation). The image stays in the Library; this only clears the live canvas.
     func clearResult() {
         image = nil
-        switch phase { case .done, .failed: phase = .idle; default: break }
+        switch phase { case .done, .failed, .cancelled: phase = .idle; default: break }
     }
 
     /// Show a transient confirmation banner that auto-dismisses.
@@ -353,10 +442,126 @@ final class AppModel {
         }
     }
 
+    func startGenerate() {
+        // Guard against BOTH a running generation and a running install — and set inFlight + the task
+        // handle SYNCHRONOUSLY (on the main actor) before the Task body runs, so a rapid install+generate
+        // can't both pass their guards in the window before the async body sets inFlight (two pipelines).
+        guard generationTask == nil, operationTask == nil, !inFlight,
+              !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        let operationID = UUID()
+        let control = GenerationControl()
+        inFlight = true
+        generationControl = control
+        activeOperationID = operationID
+        generationTask = Task { @MainActor in
+            defer {
+                self.inFlight = false
+                self.generationTask = nil
+                self.generationControl = nil
+                self.activeOperationID = nil
+            }
+            await self.runGenerate(control: control, operationID: operationID)
+        }
+    }
+
+    func cancelOperation() {
+        generationControl?.cancel()
+        generationTask?.cancel()
+        operationTask?.cancel()
+        // Only show "Cancelling…" when a cancellable task actually exists; the handle-less inFlight
+        // paths (model delete) can't be cancelled and would otherwise wedge on this label.
+        if (generationTask != nil || operationTask != nil), isBusy { phase = .cancelling }
+    }
+
+    func pauseGeneration() {
+        guard let control = generationControl else { return }
+        control.pause()
+        // Transition to .paused optimistically. The engine blocks at the NEXT step boundary, so no
+        // further progress callback arrives to drive a .pausing→.paused transition — leaving it on
+        // .pausing would stick "Pausing…" forever. (The in-flight step may still be finishing.)
+        switch phase {
+        case .generating(let step, let total), .pausing(let step, let total), .paused(let step, let total):
+            phase = .paused(step, total)
+        default:
+            break
+        }
+    }
+
+    func resumeGeneration() {
+        guard let control = generationControl else { return }
+        control.resume()
+        switch phase {
+        case .paused(let step, let total), .pausing(let step, let total):
+            phase = .generating(step, total)
+        default:
+            break
+        }
+    }
+
+    var canPauseGeneration: Bool {
+        switch phase { case .generating, .pausing, .paused: return true; default: return false }
+    }
+
+    var isGenerationPaused: Bool {
+        switch phase { case .pausing, .paused: return true; default: return false }
+    }
+
+    /// Backward-compatible async entry for previews/tests; the UI should call `startGenerate()` so
+    /// the AppModel owns the cancellable task.
     func generate() async {
-        guard !inFlight else { return }
-        inFlight = true; defer { inFlight = false }
-        await runGenerate()
+        startGenerate()
+    }
+
+    func startInstallRecipe(_ model: DiffusionModel) {
+        guard operationTask == nil, generationTask == nil, !inFlight else { return }
+        let operationID = UUID()
+        inFlight = true
+        activeOperationID = operationID
+        operationTask = Task { @MainActor in
+            defer {
+                self.inFlight = false
+                self.operationTask = nil
+                self.activeOperationID = nil
+            }
+            self.selectedID = model.id
+            do {
+                try await self.downloadSelected(operationID: operationID)
+                self.componentsRevision += 1
+            } catch is CancellationError {
+                self.phase = .cancelled
+                self.componentsRevision += 1
+            } catch {
+                self.phase = .failed(String(describing: error))
+            }
+        }
+    }
+
+    func startInstallComponent(_ id: String, model: DiffusionModel) {
+        guard operationTask == nil, generationTask == nil, !inFlight else { return }
+        let operationID = UUID()
+        inFlight = true
+        activeOperationID = operationID
+        operationTask = Task { @MainActor in
+            defer {
+                self.inFlight = false
+                self.operationTask = nil
+                self.activeOperationID = nil
+            }
+            if model.family == .flux2 {
+                await self.downloadFluxComponentUnlocked(id, operationID: operationID)
+            } else if model.family == .zImage {
+                self.selectedID = model.id
+                do {
+                    try await self.downloadSelected(operationID: operationID)
+                    self.componentsRevision += 1
+                } catch is CancellationError {
+                    self.phase = .cancelled
+                    self.componentsRevision += 1
+                } catch {
+                    self.phase = .failed(String(describing: error))
+                }
+            }
+        }
     }
 
     /// Delete a model's downloaded weights to free disk space. If that model is currently loaded,
@@ -465,8 +670,7 @@ final class AppModel {
 
     /// Install one recipe component.
     func installComponent(_ id: String, model: DiffusionModel) async {
-        if model.family == .flux2 { await downloadFluxComponent(id); return }
-        if model.family == .zImage { selectedID = model.id; await download() }
+        startInstallComponent(id, model: model)
     }
 
     /// Remove one recipe component.
@@ -477,12 +681,11 @@ final class AppModel {
 
     /// Download all missing active components for a model (the model-level "Download" action).
     func installRecipe(_ model: DiffusionModel) async {
-        selectedID = model.id
-        await download()
+        startInstallRecipe(model)
     }
 
     /// Download the selected model's weights. No reentrancy guard — callers hold `inFlight`.
-    private func downloadSelected() async {
+    private func downloadSelected(operationID: UUID) async throws {
         let model = selected
         #if os(iOS)
         // Keep the screen awake during the multi-GB download so a foreground URLSession isn't
@@ -490,35 +693,41 @@ final class AppModel {
         UIApplication.shared.isIdleTimerDisabled = true
         defer { UIApplication.shared.isIdleTimerDisabled = false }
         #endif
-        do {
-            phase = .downloading(0)
-            switch model.family {
-            case .zImage:
-                let repo = model.variants[0].source.huggingFaceRepo
-                _ = try await downloader.download(repoId: repo) { fraction in
-                    Task { @MainActor in if case .downloading = self.phase { self.phase = .downloading(fraction) } }
+        phase = .downloading(0)
+        switch model.family {
+        case .zImage:
+            let repo = model.variants[0].source.huggingFaceRepo
+            _ = try await downloader.download(repoId: repo) { fraction in
+                Task { @MainActor in
+                    if self.activeOperationID == operationID, case .downloading = self.phase {
+                        self.phase = .downloading(fraction)
+                    }
                 }
-            case .flux2:
-                try await Flux2FacadeEngine.download(transformer: fluxTransformer, encoder: fluxEncoder, decoder: fluxDecoder) { fraction in
-                    Task { @MainActor in if case .downloading = self.phase { self.phase = .downloading(fraction) } }
-                }
-            default:
-                break
             }
-            phase = .idle
-        } catch {
-            phase = .failed(String(describing: error))
+        case .flux2:
+            try await Flux2FacadeEngine.download(transformer: fluxTransformer, encoder: fluxEncoder, decoder: fluxDecoder) { fraction in
+                Task { @MainActor in
+                    if self.activeOperationID == operationID, case .downloading = self.phase {
+                        self.phase = .downloading(fraction)
+                    }
+                }
+            }
+        default:
+            break
         }
+        try Task.checkCancellation()
+        phase = .idle
     }
 
-    private func runGenerate() async {
+    private func runGenerate(control: GenerationControl, operationID: UUID) async {
         let model = selected
         do {
             // Ensure the selected model's active recipe is on disk before loading (all families).
             if !isDownloaded(model) {
-                await downloadSelected()
+                try await downloadSelected(operationID: operationID)
                 guard isDownloaded(model) else { return }
             }
+            try control.checkpoint()
 
             // Reload when the model changed OR (FLUX) the chosen precision recipe changed.
             var needsReload = engine == nil || loadedID != model.id
@@ -539,14 +748,19 @@ final class AppModel {
                     : SafetensorsWeightSource(tensors: [:])
                 phase = .loading(0)
                 try await built.load(model, variant: model.variants[0], source: source) { fraction in
-                    Task { @MainActor in if case .loading = self.phase { self.phase = .loading(fraction) } }
+                    Task { @MainActor in
+                        if self.activeOperationID == operationID, case .loading = self.phase {
+                            self.phase = .loading(fraction)
+                        }
+                    }
                 }
                 engine = built
                 loadedID = model.id
                 loadedRecipe = (model.family == .flux2) ? fluxRecipeLabel : nil
             }
             // Ensure the loaded engine is actually the selected model (a failed switch leaves none).
-            guard let engine, loadedID == model.id else { phase = .failed("Model not loaded"); return }
+            guard loadedID == model.id, engine != nil else { phase = .failed("Model not loaded"); return }
+            try control.checkpoint()
 
             phase = .generating(0, steps)
             // Sample peak resident memory across the run so the iPhone streaming residency is visible.
@@ -560,25 +774,54 @@ final class AppModel {
             defer { memoryMonitor.cancel() }
             let seed = UInt64(seedText) ?? 42
             let request = GenerationRequest(prompt: prompt, steps: steps, seed: seed,
-                                            size: ImageSize(width: size, height: size))
+                                            size: ImageSize(width: size, height: size),
+                                            control: control)
             let genStart = Date()
-            let cgImage = try await engine.generate(request) { progress in
-                Task { @MainActor in
-                    // Only advance while still generating, so a late callback can't revive a finished run.
-                    if case .denoising(let step, let total, _) = progress, case .generating = self.phase {
-                        self.phase = .generating(step, total)
+            let cgImage: CGImage
+            do {
+                guard let currentEngine = engine else { phase = .failed("Model not loaded"); return }
+                cgImage = try await currentEngine.generate(request) { progress in
+                    Task { @MainActor in
+                        // Only advance while still generating, so a late callback can't revive a finished run.
+                        if self.activeOperationID == operationID,
+                           case .denoising(let step, let total, _) = progress {
+                            switch self.phase {
+                            case .generating, .pausing, .paused:
+                                self.phase = control.isPaused ? .paused(step, total) : .generating(step, total)
+                            default:
+                                break
+                            }
+                        }
                     }
                 }
             }
+            try control.checkpoint()
+            await unloadOneShotStreamingEngineIfNeeded(for: model)
+            // Defensive: only the active operation may write the terminal result, so a stale run that
+            // finished after a newer one started can't stomp its phase / insert its image.
+            guard activeOperationID == operationID else { return }
             let elapsed = Date().timeIntervalSince(genStart)
             lastGenerationSeconds = elapsed
             image = cgImage
             phase = .done
-            history.insert(Generation(image: cgImage, prompt: prompt, modelID: model.id,
-                                      modelName: model.displayName, size: size, steps: steps, seed: seed,
-                                      duration: elapsed, settings: generationSettings(for: model)),
-                           at: 0)
+            let generation = Generation(image: cgImage, prompt: prompt, modelID: model.id,
+                                        modelName: model.displayName, size: size, steps: steps, seed: seed,
+                                        duration: elapsed, settings: generationSettings(for: model))
+            history.insert(generation, at: 0)
+            do {
+                try await libraryStore.save(history)
+                showToast("Saved to Library")
+            } catch {
+                showToast("Couldn’t save to Library")
+            }
+        } catch is CancellationError {
+            await unloadOneShotStreamingEngineIfNeeded(for: model)
+            guard activeOperationID == operationID else { return }
+            phase = .cancelled
+            showToast("Cancelled")
         } catch {
+            await unloadOneShotStreamingEngineIfNeeded(for: model)
+            guard activeOperationID == operationID else { return }
             phase = .failed(String(describing: error))
         }
     }
@@ -672,9 +915,32 @@ final class AppModel {
         tab = .create
     }
 
+    /// Delete one saved Library record and its image file.
+    func deleteGeneration(_ generation: Generation) {
+        history.removeAll { $0.id == generation.id }
+        let remaining = history
+        Task { [libraryStore] in
+            do {
+                try await libraryStore.delete(generation, remaining: remaining)
+                await MainActor.run { self.showToast("Deleted") }
+            } catch {
+                await MainActor.run { self.showToast("Couldn’t delete") }
+            }
+        }
+    }
+
     /// Z-Image runs the block-streaming `MLXDiffusionEngine` on iPhone (partial-load, ~3 GB peak)
     /// and stays on the resident `ZImageFacadeEngine` on Mac (it already produces correct images).
     private var zImageUsesStreaming: Bool { device.isPhone }
+
+    private func unloadOneShotStreamingEngineIfNeeded(for model: DiffusionModel) async {
+        guard model.family == .zImage, zImageUsesStreaming, loadedID == model.id,
+              let current = engine else { return }
+        engine = nil
+        loadedID = nil
+        loadedRecipe = nil
+        await current.unload()
+    }
 
     /// Build the `WeightSource` a streaming Z-Image engine consumes: a `ZImageComponentSource`
     /// opened over the downloaded model folder. `streaming` opens the transformer via
@@ -706,11 +972,7 @@ final class AppModel {
 
     /// PNG bytes for a `CGImage`, used by the macOS save panel / `.fileExporter`. Cross-platform.
     func pngData(_ cg: CGImage) -> Data? {
-        let data = NSMutableData()
-        guard let dest = CGImageDestinationCreateWithData(data, UTType.png.identifier as CFString, 1, nil) else { return nil }
-        CGImageDestinationAddImage(dest, cg, nil)
-        guard CGImageDestinationFinalize(dest) else { return nil }
-        return data as Data
+        ImageCodec.pngData(cg)
     }
 
     #if os(iOS)
