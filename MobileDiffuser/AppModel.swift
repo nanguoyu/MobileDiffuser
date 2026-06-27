@@ -728,18 +728,10 @@ final class AppModel {
 
     private func runGenerate(control: GenerationControl, operationID: UUID) async {
         let model = selected
-        // Thermal start-gate: refuse to BEGIN a heavy run (iPhone 1024 FLUX block-streaming) while the
-        // device is already hot. The per-step throttle can only slow a run that's underway; the first
-        // .serious flip in a short denoise lands too late to keep a warm-start run off a thermal
-        // shutdown. Only the heavy path is gated — `fluxUsesStreaming` is `device.isPhone && size > 512`,
-        // so Mac (isPhone false) and the resident 512 facade never trip it; shouldDeferHeavyStart() is
-        // additionally a compile-time `false` on macOS. Recoverable, not a failure: fall back to idle and
-        // invite a retry once the phone cools, mirroring the EngineError.pausedForHeat recovery.
-        if model.family == .flux2, fluxUsesStreaming, ThermalGovernor.shared.shouldDeferHeavyStart() {
-            phase = .idle
-            showToast("Your phone is warm — let it cool a moment before a 1024 render")
-            return
-        }
+        // No thermal START gate: a 1024 streaming run self-regulates via the engine's per-step
+        // `ThermalGovernor.throttleIfNeeded` — it paces down at `.serious` and PAUSES with the visible
+        // "Cooling…" canvas at `.critical` (recoverable). A silent start-refusal here just made the
+        // Generate button look dead on a warm phone, so the run is always allowed to start.
         do {
             // Ensure the selected model's active recipe is on disk before loading (all families).
             if !isDownloaded(model) {
