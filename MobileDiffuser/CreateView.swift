@@ -95,14 +95,14 @@ struct HeroCanvas: View {
                     .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.canvas, style: .continuous))
                     .transition(.opacity.combined(with: .scale(scale: 0.98)))
             case .generating(let s, let t):
-                placeholder(icon: "sparkles", pulsing: true, text: "Generating… step \(s)/\(t)")
+                forming(icon: "sparkles", pulsing: true, text: "Generating… step \(s)/\(t)")
             case .pausing(let s, let t):
-                placeholder(icon: "pause.circle", pulsing: true, text: "Pausing after step \(s)/\(t)…")
+                forming(icon: "pause.circle", pulsing: true, text: "Pausing after step \(s)/\(t)…")
             case .paused(let s, let t):
-                placeholder(icon: "pause.circle.fill", pulsing: false, text: "Paused at step \(s)/\(t)")
+                forming(icon: "pause.circle.fill", pulsing: false, text: "Paused at step \(s)/\(t)")
             case .cooling(let s, let t):
-                placeholder(icon: "thermometer.snowflake", pulsing: true,
-                            text: "Cooling to protect your phone… (step \(s)/\(t))")
+                forming(icon: "thermometer.snowflake", pulsing: true,
+                        text: "Cooling to protect your phone… (step \(s)/\(t))")
             case .loading:
                 placeholder(icon: loadingIcon, pulsing: true, text: model.statusText)
             case .empty:
@@ -208,6 +208,25 @@ struct HeroCanvas: View {
                 .symbolEffect(.pulse, isActive: pulsing && !reduceMotion)
             Text(text).font(.callout).foregroundStyle(Theme.textSecondary)
                 .multilineTextAlignment(.center)
+        }
+    }
+
+    /// During a run: show the cheap latent preview (the image visibly forming) when the architecture
+    /// provides one, with a small status chip on top; otherwise the icon placeholder. The bottom
+    /// progress rail + pause/cancel controls render over this either way, so progress stays visible.
+    @ViewBuilder
+    private func forming(icon: String, pulsing: Bool, text: String) -> some View {
+        if let preview = model.previewImage {
+            Image(decorative: preview, scale: 1).resizable().aspectRatio(contentMode: .fit)
+                .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.canvas, style: .continuous))
+                .overlay(alignment: .top) {
+                    Text(text).font(.caption).foregroundStyle(.white)
+                        .padding(.horizontal, Theme.Space.md).padding(.vertical, Theme.Space.sm)
+                        .background(.black.opacity(0.4), in: Capsule())
+                        .padding(.top, Theme.Space.md)
+                }
+        } else {
+            placeholder(icon: icon, pulsing: pulsing, text: text)
         }
     }
 }

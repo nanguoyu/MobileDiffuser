@@ -156,6 +156,9 @@ final class AppModel {
     var seedText = "42"
     var phase: Phase = .idle
     var image: CGImage?
+    /// Cheap latent→RGB preview of the in-progress denoise (architecture-provided, no VAE), shown in
+    /// the canvas so a long render isn't a blank wait. Cleared at start and when the final image lands.
+    var previewImage: CGImage?
     var history: [Generation] = []
     /// Transient confirmation banner (e.g. "Saved to Photos"); auto-clears after a couple seconds.
     var toast: String?
@@ -728,6 +731,7 @@ final class AppModel {
 
     private func runGenerate(control: GenerationControl, operationID: UUID) async {
         let model = selected
+        previewImage = nil   // drop any prior run's forming-image preview
         // No thermal START gate: a 1024 streaming run self-regulates via the engine's per-step
         // `ThermalGovernor.throttleIfNeeded` — it paces down at `.serious` and PAUSES with the visible
         // "Cooling…" canvas at `.critical` (recoverable). A silent start-refusal here just made the
@@ -809,7 +813,8 @@ final class AppModel {
                         // Only advance while still generating, so a late callback can't revive a finished run.
                         guard self.activeOperationID == operationID else { return }
                         switch progress {
-                        case .denoising(let step, let total, _):
+                        case .denoising(let step, let total, let preview):
+                            if let preview { self.previewImage = preview }   // show the forming image
                             // A denoise step after a cooling pause means the device cooled and the run
                             // auto-resumed — leave .cooling and reflect live progress again.
                             switch self.phase {
@@ -841,6 +846,7 @@ final class AppModel {
             let elapsed = Date().timeIntervalSince(genStart)
             lastGenerationSeconds = elapsed
             image = cgImage
+            previewImage = nil   // the final VAE image replaces the cheap preview
             phase = .done
             let generation = Generation(image: cgImage, prompt: prompt, modelID: model.id,
                                         modelName: model.displayName, size: size, steps: steps, seed: seed,
