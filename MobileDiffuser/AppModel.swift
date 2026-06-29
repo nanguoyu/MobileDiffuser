@@ -159,9 +159,9 @@ final class AppModel {
     /// Cheap latent→RGB preview of the in-progress denoise (architecture-provided, no VAE), shown in
     /// the canvas so a long render isn't a blank wait. Cleared at start and when the final image lands.
     var previewImage: CGImage?
-    /// Reference images for FLUX.2 image-to-image (1–3; editing / reference-context conditioning, NOT
-    /// a strength slider). When non-empty the run routes to the resident facade (the block-streaming
-    /// path is text-to-image only), so on iPhone i2i runs the 512 facade.
+    /// Reference images for FLUX.2 image-to-image (editing / reference-context conditioning, NOT a
+    /// strength slider). macOS uses the resident facade with 1–3 references; iPhone uses the streaming
+    /// path with a single 512²-capped reference at 512 output (the only way i2i fits the 8 GB budget).
     var referenceImages: [CGImage] = []
     var history: [Generation] = []
     /// Transient confirmation banner (e.g. "Saved to Photos"); auto-clears after a couple seconds.
@@ -259,7 +259,7 @@ final class AppModel {
         if fluxActiveComponentIDs.contains(id),
            let loaded = models.first(where: { $0.id == loadedID }), loaded.family == .flux2,
            let current = engine {
-            engine = nil; loadedID = nil; loadedRecipe = nil; loadedFluxStreaming = nil
+            engine = nil; loadedID = nil; loadedRecipe = nil; loadedFluxStreaming = nil; loadedStreamingSeqLen = nil
             await current.unload()
         }
         try? Flux2FacadeEngine.deleteComponent(id)
@@ -306,6 +306,7 @@ final class AppModel {
     private var loadedID: String?
     private var loadedRecipe: String?   // FLUX: the active recipe label that's loaded, for reload-on-precision-change
     private var loadedFluxStreaming: Bool?   // FLUX: whether the loaded engine is the streaming (1024) one, for reload-on-size-cross
+    private var loadedStreamingSeqLen: Int?  // FLUX streaming: the image token count the loaded engine planned for (output + i2i ref), for reload-when-the-plan-changes (e.g. i2i 2048 ↔ T2I-1024 4096)
     private var inFlight = false   // reentrancy lock: one download/generate at a time
     @ObservationIgnored private var generationTask: Task<Void, Never>?
     @ObservationIgnored private var operationTask: Task<Void, Never>?
@@ -584,7 +585,7 @@ final class AppModel {
         guard !inFlight else { return }
         inFlight = true; defer { inFlight = false }
         if loadedID == model.id, let current = engine {
-            engine = nil; loadedID = nil; loadedRecipe = nil; loadedFluxStreaming = nil
+            engine = nil; loadedID = nil; loadedRecipe = nil; loadedFluxStreaming = nil; loadedStreamingSeqLen = nil
             await current.unload()
         }
         switch model.family {
@@ -755,12 +756,16 @@ final class AppModel {
                 // 512 (resident facade) and 1024 (streaming engine) are different engines — rebuild
                 // when the requested size crosses the boundary.
                 if loadedFluxStreaming != fluxUsesStreaming { needsReload = true }
+                // Both i2i (≈2048 tokens) and T2I-1024 (4096) stream, so the boolean above can't tell
+                // them apart — rebuild when the streaming plan's token count changes, or the load-time
+                // memory gate would be stale (an i2i-planned engine under-budgets a 1024 T2I render).
+                if fluxUsesStreaming, loadedStreamingSeqLen != streamingImageSeqLen { needsReload = true }
             }
             if needsReload {
                 // Unload the previous engine BEFORE loading the new one, so two large weight sets
                 // are never resident at once (a model switch would otherwise peak ~10+ GB).
                 if let previous = engine {
-                    engine = nil; loadedID = nil; loadedRecipe = nil; loadedFluxStreaming = nil
+                    engine = nil; loadedID = nil; loadedRecipe = nil; loadedFluxStreaming = nil; loadedStreamingSeqLen = nil
                     await previous.unload()
                 }
                 let built = try makeEngine(for: model)
@@ -789,6 +794,7 @@ final class AppModel {
                 loadedID = model.id
                 loadedRecipe = (model.family == .flux2) ? fluxRecipeLabel : nil
                 loadedFluxStreaming = (model.family == .flux2) ? fluxUsesStreaming : nil
+                loadedStreamingSeqLen = (model.family == .flux2 && fluxUsesStreaming) ? streamingImageSeqLen : nil
             }
             // Ensure the loaded engine is actually the selected model (a failed switch leaves none).
             guard loadedID == model.id, engine != nil else { phase = .failed("Model not loaded"); return }
@@ -805,8 +811,13 @@ final class AppModel {
             }
             defer { memoryMonitor.cancel() }
             let seed = UInt64(seedText) ?? 42
+            // `referenceImage` (singular) feeds the STREAMING i2i path (core's initialLatent takes one
+            // reference — the iPhone budget is a single 512²-capped reference); `referenceImages`
+            // (plural) feeds the macOS resident facade (1-3 references). Size is the effective size, so
+            // an iPhone i2i renders 512 even if 1024 is selected.
             let request = GenerationRequest(prompt: prompt, steps: steps, seed: seed,
-                                            size: ImageSize(width: size, height: size),
+                                            size: ImageSize(width: fluxEffectiveSize, height: fluxEffectiveSize),
+                                            referenceImage: model.family == .flux2 ? referenceImages.first : nil,
                                             referenceImages: model.family == .flux2 ? referenceImages : [],
                                             control: control)
             let genStart = Date()
@@ -903,7 +914,7 @@ final class AppModel {
             // 1024 iPhone path, the phone-aware resident facade for 512 / Mac.
             if fluxUsesStreaming {
                 return MLXDiffusionEngine.capabilities(for: model, variant: variant, on: device,
-                                                       imageSeqLen: (size / 16) * (size / 16))
+                                                       imageSeqLen: streamingImageSeqLen)
             }
             return Flux2FacadeEngine.capabilities(for: model, variant: variant, on: device)
         default:
@@ -996,11 +1007,33 @@ final class AppModel {
     /// and stays on the resident `ZImageFacadeEngine` on Mac (it already produces correct images).
     private var zImageUsesStreaming: Bool { device.isPhone }
 
-    /// FLUX: 1024 streams the transformer block-by-block (the only way it fits an iPhone); 512 stays on
-    /// the fast, validated resident facade. macOS always runs the resident facade.
-    /// FLUX 1024-on-iPhone streams the transformer; but i2i (reference images) is text-to-image-only
-    /// on the streaming path, so any run WITH reference images falls back to the resident facade.
-    private var fluxUsesStreaming: Bool { device.isPhone && size > 512 && referenceImages.isEmpty }
+    /// FLUX on iPhone streams the transformer block-by-block (the only way the big sequences fit an
+    /// 8 GB budget); macOS always runs the resident facade. Streaming kicks in for 1024 T2I AND for any
+    /// i2i — the resident facade OOMs an iPhone on i2i (reference tokens balloon the resident peak),
+    /// whereas streaming bounds residency to one block so even a 512 i2i (~3.45 GB) fits.
+    private var fluxUsesStreaming: Bool { device.isPhone && (size > 512 || !referenceImages.isEmpty) }
+
+    /// i2i output size is capped to 512 on iPhone: a 1024 output + reference tokens, even streamed,
+    /// flirts with the planner's 4 GB gate, whereas 512 + a 512²-capped reference is a comfortable
+    /// ~3.45 GB. macOS (facade) renders i2i at the chosen size.
+    private var fluxEffectiveSize: Int { (device.isPhone && !referenceImages.isEmpty) ? min(size, 512) : size }
+
+    /// Image token count the streaming engine plans for: output tokens + (i2i) the reference budget.
+    /// The reference is capped to 512² ⇒ ≤1024 tokens; plan for the worst case so the memory gate isn't
+    /// under-budgeted (the actual run derives the real count from the encoded reference).
+    private var streamingImageSeqLen: Int {
+        let out = (fluxEffectiveSize / 16) * (fluxEffectiveSize / 16)
+        let ref = referenceImages.isEmpty ? 0 : (512 / 16) * (512 / 16)   // 1024 worst-case ref tokens
+        return out + ref
+    }
+
+    /// img2img is available on both platforms now: macOS via the resident facade (1-3 references, up to
+    /// the chosen size), iPhone via the streaming path (1 reference capped to 512², 512 output).
+    var supportsReferenceImages: Bool { true }
+
+    /// References the current platform's i2i path accepts: iPhone streams a SINGLE reference (the 8 GB
+    /// budget); macOS facade takes up to 3.
+    var maxReferenceImages: Int { device.isPhone ? 1 : 3 }
 
     private func unloadOneShotStreamingEngineIfNeeded(for model: DiffusionModel) async {
         guard model.family == .zImage, zImageUsesStreaming, loadedID == model.id,
@@ -1008,7 +1041,7 @@ final class AppModel {
         engine = nil
         loadedID = nil
         loadedRecipe = nil
-        loadedFluxStreaming = nil
+        loadedFluxStreaming = nil; loadedStreamingSeqLen = nil
         await current.unload()
     }
 
@@ -1041,7 +1074,7 @@ final class AppModel {
                 // low-peak streamingInternal path instead of the 512-reference resident plan.
                 return MLXDiffusionEngine(architecture: Flux2Architecture(vaeVariant: fluxDecoder.vae),
                                           device: device,
-                                          targetImageSeqLen: (size / 16) * (size / 16))
+                                          targetImageSeqLen: streamingImageSeqLen)
             }
             return Flux2FacadeEngine(transformer: fluxTransformer, encoder: fluxEncoder, decoder: fluxDecoder)
         default:

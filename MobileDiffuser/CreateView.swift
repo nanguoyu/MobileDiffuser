@@ -235,7 +235,7 @@ struct PromptBar: View {
 
     var body: some View {
         VStack(spacing: Theme.Space.md) {
-            if model.selected.family == .flux2 { referenceThumbnails }   // attachments above the prompt
+            if model.selected.family == .flux2 && model.supportsReferenceImages { referenceThumbnails }   // attachments above the prompt (Mac-only)
             HStack(alignment: .top, spacing: Theme.Space.md) {
                 TextField("Describe an image…", text: $model.prompt, axis: .vertical)
                     .textFieldStyle(.plain)
@@ -245,7 +245,7 @@ struct PromptBar: View {
                     .background(Theme.surface2, in: RoundedRectangle(cornerRadius: Theme.Radius.field, style: .continuous))
                     .overlay(RoundedRectangle(cornerRadius: Theme.Radius.field, style: .continuous).strokeBorder(Theme.hairline))
 
-                if model.selected.family == .flux2 && model.referenceImages.isEmpty { attachButton }   // empty-state first-add
+                if model.selected.family == .flux2 && model.supportsReferenceImages && model.referenceImages.isEmpty { attachButton }   // empty-state first-add (Mac-only)
 
                 Button { model.startGenerate() } label: {
                     Image(systemName: "arrow.up").font(.headline)
@@ -323,7 +323,7 @@ struct PromptBar: View {
                         .accessibilityLabel("Reference image \(idx + 1)")
                         .transition(.scale(scale: 0.85).combined(with: .opacity))
                 }
-                if model.referenceImages.count < 3 {
+                if model.referenceImages.count < model.maxReferenceImages {
                     attachPicker { addTile() }            // an open slot — append another reference
                         .disabled(model.isBusy)
                         .opacity(model.isBusy ? 0.45 : 1)
@@ -362,7 +362,7 @@ struct PromptBar: View {
             .buttonStyle(.plain)
         #else
         PhotosPicker(selection: $pickerItems,
-                     maxSelectionCount: max(1, 3 - model.referenceImages.count),
+                     maxSelectionCount: max(1, model.maxReferenceImages - model.referenceImages.count),
                      matching: .images) { label() }
         #endif
     }
@@ -408,7 +408,7 @@ struct PromptBar: View {
         }
         await MainActor.run {
             withAnimation(Motion.spring) {
-                model.referenceImages = Array((model.referenceImages + images).prefix(3))   // APPEND, cap 3
+                model.referenceImages = Array((model.referenceImages + images).prefix(model.maxReferenceImages))   // APPEND, platform cap
             }
             pickerItems.removeAll()   // reset so the next pick starts fresh (append semantics)
         }
@@ -429,7 +429,7 @@ struct PromptBar: View {
         let toAdd = images
         await MainActor.run {
             withAnimation(Motion.spring) {
-                model.referenceImages = Array((model.referenceImages + toAdd).prefix(3))   // APPEND, cap 3
+                model.referenceImages = Array((model.referenceImages + toAdd).prefix(model.maxReferenceImages))   // APPEND, platform cap
             }
         }
     }
