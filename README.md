@@ -9,9 +9,9 @@ MobileDiffuser is a **universal (macOS + iOS) on-device image-generation app bui
 Swift + MLX** — no Core ML, no Python at runtime. It runs open-weight diffusion models locally,
 with first-class in-app model management/download and per-hardware memory management.
 
-> This is a ground-up rebuild of the original Core ML Stable Diffusion 3 app (see
-> [Attribution](#attribution)). The Core ML / `ml-stable-diffusion` stack has been removed; the
-> new engine is MLX everywhere, including the iPhone partial-load path.
+> MobileDiffuser began as Wenwu Tang's on-device **Core ML Stable Diffusion 3** app; this is its
+> ground-up rebuild onto a pure-**MLX** engine. The Core ML / `ml-stable-diffusion` stack is gone, and
+> MLX now runs everywhere, including the iPhone partial-load path (see [Attribution](#attribution)).
 
 ## Status
 
@@ -92,15 +92,16 @@ freed before the transformer streams — keeping the phone under its memory budg
 
 ## License
 
-This fork is licensed under the **Mozilla Public License 2.0** (see [`LICENSE`](LICENSE) and
-[`NOTICE`](NOTICE)), retaining the original project's MIT copyright. Model weights are subject to
+MobileDiffuser is licensed under the **Mozilla Public License 2.0** (see [`LICENSE`](LICENSE) and
+[`NOTICE`](NOTICE)), retaining the original Core ML release's MIT copyright. Model weights are subject to
 their own licenses (Z-Image Turbo and FLUX.2 Klein are Apache-2.0) and are not included in this
 repository.
 
 ## Attribution
 
-Forked from [TWWinde/MobileDiffuser](https://github.com/TWWinde/MobileDiffuser), an on-device
-Core ML Stable Diffusion 3 app. Citation for the original Core ML work:
+The original on-device **Core ML Stable Diffusion 3** MobileDiffuser is **Wenwu Tang's**
+([TWWinde/MobileDiffuser](https://github.com/TWWinde/MobileDiffuser), with Olga Saukh). This
+**pure-MLX rebuild** is **Dong Wang's**. Citation for the original Core ML work:
 
 ```bibtex
 @misc{tang2025mobilediffuser,
