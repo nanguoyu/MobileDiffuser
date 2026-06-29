@@ -231,7 +231,7 @@ struct PromptBar: View {
 
     var body: some View {
         VStack(spacing: Theme.Space.md) {
-            if model.selected.family == .flux2 { referenceStrip }   // FLUX.2 reference-context i2i
+            if model.selected.family == .flux2 { referenceThumbnails }   // attachments above the prompt
             HStack(alignment: .top, spacing: Theme.Space.md) {
                 TextField("Describe an image…", text: $model.prompt, axis: .vertical)
                     .textFieldStyle(.plain)
@@ -240,6 +240,8 @@ struct PromptBar: View {
                     .padding(Theme.Space.md)
                     .background(Theme.surface2, in: RoundedRectangle(cornerRadius: Theme.Radius.field, style: .continuous))
                     .overlay(RoundedRectangle(cornerRadius: Theme.Radius.field, style: .continuous).strokeBorder(Theme.hairline))
+
+                if model.selected.family == .flux2 { attachButton }   // quiet, secondary-weight affordance
 
                 Button { model.startGenerate() } label: {
                     Image(systemName: "arrow.up").font(.headline)
@@ -253,6 +255,7 @@ struct PromptBar: View {
                 .accessibilityLabel("Generate")
                 .accessibilityHint("Creates an image from your prompt")
             }
+            .animation(Motion.spring, value: model.referenceImages.count)
             HStack(alignment: .bottom, spacing: Theme.Space.lg) {
                 labeledControl("Size") {
                     Segmented(selection: $model.size, options: model.selected.sizeChoices) { "\($0)" }
@@ -269,6 +272,9 @@ struct PromptBar: View {
                 .frame(maxWidth: 120)
             }
         }
+        // Loader is on the always-present VStack (not the conditional strip) so it fires for the
+        // empty-state attach button too.
+        .onChange(of: pickerItems) { _, items in Task { await loadReferences(items) } }
         // Compose the workspace on wide Macs: cap content to the canvas width, centered,
         // while the surface bar still spans edge to edge.
         .frame(maxWidth: 880)
@@ -286,44 +292,68 @@ struct PromptBar: View {
         }
     }
 
-    /// FLUX.2 reference-context i2i: pick 1–3 reference images (editing / style / composition). Adding
-    /// any reference routes the run to the resident facade (the streaming path is text-to-image only),
-    /// so on iPhone i2i runs at 512.
-    @ViewBuilder private var referenceStrip: some View {
-        HStack(spacing: Theme.Space.sm) {
-            ForEach(Array(model.referenceImages.enumerated()), id: \.offset) { idx, cg in
-                Image(decorative: cg, scale: 1).resizable().aspectRatio(contentMode: .fill)
-                    .frame(width: 44, height: 44)
-                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(Theme.hairline))
-                    .overlay(alignment: .topTrailing) {
-                        Button {
-                            model.referenceImages.remove(at: idx); pickerItems.removeAll()
-                        } label: {
-                            Image(systemName: "xmark.circle.fill")
-                                .symbolRenderingMode(.palette).foregroundStyle(.white, .black.opacity(0.5))
-                        }
-                        .buttonStyle(.plain).offset(x: 5, y: -5)
-                    }
-            }
-            if model.referenceImages.count < 3 {
-                PhotosPicker(selection: $pickerItems, maxSelectionCount: 3, matching: .images) {
-                    VStack(spacing: 2) {
-                        Image(systemName: "photo.badge.plus")
-                        Text(model.referenceImages.isEmpty ? "Reference" : "Add").font(.caption2)
-                    }
-                    .frame(width: 44, height: 44).foregroundStyle(Theme.textSecondary)
-                    .background(Theme.surface2, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(Theme.hairline))
+    // FLUX.2 reference-context i2i: attach 1–3 images used as editing / style / composition context (NOT
+    // a strength slider). `referenceThumbnails` (the strip above the field, shown only when populated)
+    // shares the TextField's exact surface2 / hairline / Radius.field vocabulary, so it reads as an
+    // attachment to the prompt, not a floating box. `attachButton` (the whole empty state) echoes the
+    // Generate button's 44pt circle in a quiet secondary weight. Any reference routes to the resident
+    // facade (streaming is text-to-image only), so on iPhone i2i runs at 512.
+
+    private var referenceThumbSize: CGFloat { 56 }
+
+    /// The populated strip — rendered above the prompt field only when references are attached.
+    @ViewBuilder private var referenceThumbnails: some View {
+        if !model.referenceImages.isEmpty {
+            HStack(spacing: Theme.Space.sm) {
+                ForEach(Array(model.referenceImages.enumerated()), id: \.offset) { idx, cg in
+                    Image(decorative: cg, scale: 1).resizable().aspectRatio(contentMode: .fill)
+                        .frame(width: referenceThumbSize, height: referenceThumbSize)
+                        .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.field, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: Theme.Radius.field, style: .continuous).strokeBorder(Theme.hairline))
+                        .overlay(alignment: .topTrailing) { removeButton(idx) }
+                        .accessibilityLabel("Reference image \(idx + 1)")
+                        .transition(.scale(scale: 0.85).combined(with: .opacity))
                 }
-                .disabled(model.isBusy)
+                Spacer(minLength: 0)
             }
-            Spacer(minLength: 0)
-            if !model.referenceImages.isEmpty {
-                Text("Edit / reference").font(.caption2).foregroundStyle(Theme.textTertiary)
-            }
+            .padding(.top, 2)   // breathing room for the nudged remove buttons
         }
-        .onChange(of: pickerItems) { _, items in Task { await loadReferences(items) } }
+    }
+
+    /// Remove control in the app's house dismiss style (xmark.circle.fill, palette white-on-translucent
+    /// black), so it reads on any photo content.
+    private func removeButton(_ idx: Int) -> some View {
+        Button {
+            withAnimation(Motion.spring) { model.referenceImages.remove(at: idx) }
+            pickerItems.removeAll()
+        } label: {
+            Image(systemName: "xmark.circle.fill")
+                .font(.system(size: 18))
+                .symbolRenderingMode(.palette)
+                .foregroundStyle(.white, .black.opacity(0.45))
+        }
+        .buttonStyle(.plain).offset(x: 6, y: -6)
+        .accessibilityLabel("Remove reference image \(idx + 1)")
+    }
+
+    /// The icon-only attach button — the entire empty state. Echoes the Generate button's 44pt circle in
+    /// a quiet secondary weight, so it reads as a companion, never a competitor, to the primary action.
+    /// Stays visible (disabled) at the 3-image cap to avoid a layout jump.
+    @ViewBuilder private var attachButton: some View {
+        let atLimit = model.referenceImages.count >= 3
+        PhotosPicker(selection: $pickerItems, maxSelectionCount: 3, matching: .images) {
+            Image(systemName: "photo.badge.plus")
+                .font(.system(size: 17, weight: .regular))
+                .foregroundStyle(atLimit ? Theme.textTertiary : Theme.textSecondary)
+                .frame(width: 44, height: 44)
+                .background(Theme.surface2, in: Circle())
+                .overlay(Circle().strokeBorder(Theme.hairline))
+        }
+        .buttonStyle(.plain)
+        .disabled(model.isBusy || atLimit)
+        .opacity(model.isBusy || atLimit ? 0.45 : 1)
+        .accessibilityLabel(model.referenceImages.isEmpty ? "Attach reference image" : "Add reference image")
+        .accessibilityHint("FLUX uses these images as editing or style context")
     }
 
     private func loadReferences(_ items: [PhotosPickerItem]) async {
@@ -335,6 +365,6 @@ struct PromptBar: View {
                 images.append(cg)
             }
         }
-        await MainActor.run { model.referenceImages = images }
+        await MainActor.run { withAnimation(Motion.spring) { model.referenceImages = images } }
     }
 }
