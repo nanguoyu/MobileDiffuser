@@ -5,6 +5,7 @@
 import SwiftUI
 import PhotosUI
 import ImageIO
+import UniformTypeIdentifiers
 
 /// Generation workspace: a full-bleed result canvas above a prompt + controls panel.
 struct CreateView: View {
@@ -227,7 +228,10 @@ struct HeroCanvas: View {
 /// Prompt entry, circular Generate action, and the size / steps / seed controls.
 struct PromptBar: View {
     @Bindable var model: AppModel
-    @State private var pickerItems: [PhotosPickerItem] = []
+    @State private var pickerItems: [PhotosPickerItem] = []   // iOS: Photos library
+    #if os(macOS)
+    @State private var showImporter = false                   // macOS: Finder file picker
+    #endif
 
     var body: some View {
         VStack(spacing: Theme.Space.md) {
@@ -338,22 +342,37 @@ struct PromptBar: View {
 
     /// The icon-only attach button — the entire empty state. Echoes the Generate button's 44pt circle in
     /// a quiet secondary weight, so it reads as a companion, never a competitor, to the primary action.
-    /// Stays visible (disabled) at the 3-image cap to avoid a layout jump.
+    /// macOS picks image FILES via a Finder open panel; iOS picks from the Photos library. Stays visible
+    /// (disabled) at the 3-image cap to avoid a layout jump.
     @ViewBuilder private var attachButton: some View {
         let atLimit = model.referenceImages.count >= 3
-        PhotosPicker(selection: $pickerItems, maxSelectionCount: 3, matching: .images) {
-            Image(systemName: "photo.badge.plus")
-                .font(.system(size: 17, weight: .regular))
-                .foregroundStyle(atLimit ? Theme.textTertiary : Theme.textSecondary)
-                .frame(width: 44, height: 44)
-                .background(Theme.surface2, in: Circle())
-                .overlay(Circle().strokeBorder(Theme.hairline))
+        Group {
+            #if os(macOS)
+            Button { showImporter = true } label: { attachLabel(atLimit) }
+                .fileImporter(isPresented: $showImporter, allowedContentTypes: [.image],
+                              allowsMultipleSelection: true) { result in
+                    if case .success(let urls) = result { Task { await loadReferences(urls: urls) } }
+                }
+            #else
+            PhotosPicker(selection: $pickerItems, maxSelectionCount: 3, matching: .images) {
+                attachLabel(atLimit)
+            }
+            #endif
         }
         .buttonStyle(.plain)
         .disabled(model.isBusy || atLimit)
         .opacity(model.isBusy || atLimit ? 0.45 : 1)
         .accessibilityLabel(model.referenceImages.isEmpty ? "Attach reference image" : "Add reference image")
         .accessibilityHint("FLUX uses these images as editing or style context")
+    }
+
+    private func attachLabel(_ atLimit: Bool) -> some View {
+        Image(systemName: "photo.badge.plus")
+            .font(.system(size: 17, weight: .regular))
+            .foregroundStyle(atLimit ? Theme.textTertiary : Theme.textSecondary)
+            .frame(width: 44, height: 44)
+            .background(Theme.surface2, in: Circle())
+            .overlay(Circle().strokeBorder(Theme.hairline))
     }
 
     private func loadReferences(_ items: [PhotosPickerItem]) async {
@@ -367,4 +386,20 @@ struct PromptBar: View {
         }
         await MainActor.run { withAnimation(Motion.spring) { model.referenceImages = images } }
     }
+
+    #if os(macOS)
+    /// macOS: load reference images from Finder-picked file URLs (security-scoped access).
+    private func loadReferences(urls: [URL]) async {
+        var images: [CGImage] = []
+        for url in urls.prefix(3) {
+            let scoped = url.startAccessingSecurityScopedResource()
+            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+            if let src = CGImageSourceCreateWithURL(url as CFURL, nil),
+               let cg = CGImageSourceCreateImageAtIndex(src, 0, nil) {
+                images.append(cg)
+            }
+        }
+        await MainActor.run { withAnimation(Motion.spring) { model.referenceImages = images } }
+    }
+    #endif
 }
