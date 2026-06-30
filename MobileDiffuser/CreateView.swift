@@ -153,6 +153,13 @@ struct HeroCanvas: View {
             } else if model.isBusy, case .downloading(let fraction) = model.phase {
                 VStack(spacing: Theme.Space.sm) {
                     ProgressView(value: fraction).tint(Theme.accent)
+                    if let detail = model.downloadMeter.detail {
+                        Text(detail)
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(Theme.textSecondary)
+                            .lineLimit(1)
+                            .accessibilityLabel("Download progress: \(detail)")
+                    }
                     Button { model.cancelOperation() } label: {
                         Image(systemName: "pause.fill")
                             .frame(width: 32, height: 32)

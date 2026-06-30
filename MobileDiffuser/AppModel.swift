@@ -100,6 +100,58 @@ func formatDuration(_ seconds: TimeInterval) -> String {
     return "\(m)m \(String(format: "%02d", s))s"
 }
 
+/// Compact "~3m left" / "~12s left" / "~1h 05m left" for a download ETA.
+private func formatETA(_ seconds: Double) -> String {
+    let s = Int(seconds.rounded())
+    if s < 60 { return "\(max(1, s))s left" }
+    if s < 3600 { return "\(s / 60)m \(String(format: "%02d", s % 60))s left" }
+    return "\(s / 3600)h \(String(format: "%02d", (s % 3600) / 60))m left"
+}
+
+/// Tracks a download's bytes / throughput / ETA from the fraction reported by the downloader plus the
+/// known total size, so the UI can show "2.3 GB / 4.6 GB · 12 MB/s · ~3m left" instead of a bare bar.
+/// Throughput is a smoothed (EMA) estimate sampled at most a few times a second so it doesn't jitter.
+struct DownloadMeter {
+    private(set) var totalBytes: Int64 = 0
+    private(set) var downloadedBytes: Int64 = 0
+    private(set) var bytesPerSecond: Double = 0
+    private var lastSampleAt: Date?
+    private var lastSampleBytes: Int64 = 0
+
+    /// Begin a new download of `total` bytes (0 ⇒ unknown total; the meter then shows nothing).
+    mutating func start(total: Int64) {
+        totalBytes = max(0, total); downloadedBytes = 0; bytesPerSecond = 0
+        lastSampleAt = nil; lastSampleBytes = 0
+    }
+
+    /// Feed a 0…1 fraction. Re-derives bytes and updates the smoothed throughput (sampled ≥0.4s apart).
+    mutating func update(fraction: Double, now: Date = Date()) {
+        guard totalBytes > 0 else { return }
+        downloadedBytes = Int64((min(max(fraction, 0), 1)) * Double(totalBytes))
+        guard let last = lastSampleAt else { lastSampleAt = now; lastSampleBytes = downloadedBytes; return }
+        let dt = now.timeIntervalSince(last)
+        guard dt >= 0.4 else { return }
+        let instantaneous = max(0, Double(downloadedBytes - lastSampleBytes)) / dt
+        bytesPerSecond = bytesPerSecond == 0 ? instantaneous : bytesPerSecond * 0.6 + instantaneous * 0.4
+        lastSampleAt = now; lastSampleBytes = downloadedBytes
+    }
+
+    var etaSeconds: Double? {
+        guard bytesPerSecond > 1, downloadedBytes < totalBytes else { return nil }
+        return Double(totalBytes - downloadedBytes) / bytesPerSecond
+    }
+
+    /// "2.3 GB / 4.6 GB · 12 MB/s · ~3m left" — speed/ETA appear once there's a stable estimate.
+    var detail: String? {
+        guard totalBytes > 0 else { return nil }
+        let f = ByteCountFormatter()
+        var parts = ["\(f.string(fromByteCount: downloadedBytes)) / \(f.string(fromByteCount: totalBytes))"]
+        if bytesPerSecond > 1 { parts.append("\(f.string(fromByteCount: Int64(bytesPerSecond)))/s") }
+        if let eta = etaSeconds { parts.append("~\(formatETA(eta))") }
+        return parts.joined(separator: " · ")
+    }
+}
+
 /// Drives any catalog model through a `DiffusionEngine` facade (Z-Image and — on macOS — FLUX.2),
 /// with model switching. UI state lives on the main actor; the engines are actors, so their heavy
 /// MLX work runs off-main without blocking the UI. Z-Image weights are downloaded in-app first;
@@ -210,6 +262,9 @@ final class AppModel {
     /// Which FLUX component (by id) is downloading + its 0...1 progress, for the detail's list.
     var fluxComponentDownloadID: String?
     var fluxComponentFraction: Double = 0
+    /// Bytes / throughput / ETA for the active download (any of: a FLUX component, a FLUX recipe, or
+    /// Z-Image), so the progress UI can show "2.3 GB / 4.6 GB · 12 MB/s · ~3m left", not a bare bar.
+    var downloadMeter = DownloadMeter()
     /// A failed component download, surfaced as inline Retry — kept off the shared generation `phase`
     /// so a failed Get never leaves a sticky "Failed" on the Create canvas.
     var fluxComponentError: (id: String, message: String)?
@@ -255,6 +310,7 @@ final class AppModel {
     private func downloadFluxComponentUnlocked(_ id: String, operationID: UUID) async {
         fluxComponentError = nil
         fluxComponentDownloadID = id; fluxComponentFraction = 0
+        downloadMeter.start(total: fluxComponents().first { $0.id == id }?.bytes ?? 0)
         defer { fluxComponentDownloadID = nil; componentsRevision += 1 }
         do {
             try await Flux2FacadeEngine.downloadComponent(id) { fraction in
@@ -262,6 +318,7 @@ final class AppModel {
                 Task { @MainActor in
                     if self.activeOperationID == operationID, self.fluxComponentDownloadID == id {
                         self.fluxComponentFraction = fraction
+                        self.downloadMeter.update(fraction: fraction)
                     }
                 }
             }
@@ -730,6 +787,7 @@ final class AppModel {
         defer { UIApplication.shared.isIdleTimerDisabled = false }
         #endif
         phase = .downloading(0)
+        downloadMeter.start(total: model.variants[0].approximateBytes)
         switch model.family {
         case .zImage:
             let repo = model.variants[0].source.huggingFaceRepo
@@ -737,6 +795,7 @@ final class AppModel {
                 Task { @MainActor in
                     if self.activeOperationID == operationID, case .downloading = self.phase {
                         self.phase = .downloading(fraction)
+                        self.downloadMeter.update(fraction: fraction)
                     }
                 }
             }
@@ -745,6 +804,7 @@ final class AppModel {
                 Task { @MainActor in
                     if self.activeOperationID == operationID, case .downloading = self.phase {
                         self.phase = .downloading(fraction)
+                        self.downloadMeter.update(fraction: fraction)
                     }
                 }
             }
