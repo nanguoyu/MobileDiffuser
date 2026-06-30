@@ -1110,22 +1110,63 @@ final class AppModel {
         ImageCodec.pngData(cg)
     }
 
+    /// PNG bytes that embed provenance (prompt/seed/model/size·steps) via PNG text chunks — used by
+    /// the Library export, ShareLink, and Save-to-Photos so a saved image keeps its recipe. Cross-platform.
+    func pngData(for gen: Generation) -> Data? {
+        ImageCodec.pngData(for: gen)
+    }
+
     #if os(iOS)
     /// Save a generated image to the user's Photo library (add-only authorization). Denial is
     /// non-fatal — the image stays in the in-app Library. iOS only; macOS uses a save panel in-view.
-    func exportImage(_ cg: CGImage) {
-        let image = UIImage(cgImage: cg)
+    ///
+    /// When a `Generation` is in scope we save from a metadata-bearing PNG file (via
+    /// `forAssetCreatedFromResourceAtURL`) rather than `creationRequestForAsset(from: UIImage)`, which
+    /// would drop the PNG text chunks. Photos may still strip some metadata on its own — that's fine;
+    /// the file export / share path is the one that reliably carries provenance.
+    func exportImage(_ gen: Generation) {
+        // Prefer the metadata-bearing PNG on disk; fall back to the bare image if encoding fails.
+        let url = ImageCodec.pngData(for: gen).flatMap { writeTempPNG($0, for: gen) }
         PHPhotoLibrary.requestAuthorization(for: .addOnly) { status in
             guard status == .authorized || status == .limited else {
                 Task { @MainActor in self.showToast("Photos access denied") }
+                if let url { try? FileManager.default.removeItem(at: url) }
                 return
             }
             PHPhotoLibrary.shared().performChanges {
-                PHAssetChangeRequest.creationRequestForAsset(from: image)
+                if let url {
+                    let request = PHAssetCreationRequest.forAsset()
+                    request.addResource(with: .photo, fileURL: url, options: nil)
+                } else {
+                    PHAssetChangeRequest.creationRequestForAsset(from: UIImage(cgImage: gen.image))
+                }
             } completionHandler: { success, _ in
+                if let url { try? FileManager.default.removeItem(at: url) }
                 Task { @MainActor in self.showToast(success ? "Saved to Photos" : "Couldn’t save") }
             }
         }
     }
     #endif
+
+    /// Write PNG bytes to a uniquely-named temp file with a friendly basename, for ShareLink and the
+    /// iOS Photos resource path. Returns `nil` on failure. Callers own cleanup.
+    func writeTempPNG(_ data: Data, for gen: Generation) -> URL? {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("share-\(gen.id.uuidString)", isDirectory: true)
+        let url = dir.appendingPathComponent("\(exportBasename(for: gen)).png")
+        do {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            try data.write(to: url, options: .atomic)
+            return url
+        } catch {
+            return nil
+        }
+    }
+
+    /// A stable, descriptive basename (no extension) for exported/shared files.
+    func exportBasename(for gen: Generation) -> String {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd_HH-mm-ss"
+        return "MobileDiffuser_\(f.string(from: gen.date))"
+    }
 }
