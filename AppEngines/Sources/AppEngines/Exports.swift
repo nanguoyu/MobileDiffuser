@@ -3,3 +3,6 @@
 // macOS (on iPhone FLUX runs the two-phase pipeline with the pre-quantized 4-bit Klein checkpoint).
 // See docs/BLUEPRINT.md ("FLUX on iOS").
 @_exported import Flux2DiffusionEngine
+
+// The stable-diffusion.cpp engine (GGUF models, starting with Qwen-Image 2.1), on both platforms.
+@_exported import SDCppEngine

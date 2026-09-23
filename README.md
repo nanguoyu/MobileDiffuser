@@ -5,9 +5,10 @@
 
 <br>
 
-MobileDiffuser is a **universal (macOS + iOS) on-device image-generation app built in pure
-Swift + MLX** — no Core ML, no Python at runtime. It runs open-weight diffusion models locally,
-with first-class in-app model management/download and per-hardware memory management.
+MobileDiffuser is a **universal (macOS + iOS) on-device image-generation app built in Swift on
+MLX**, with [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp) as a second
+engine for GGUF models — no Core ML, no Python at runtime. It runs open-weight diffusion models
+locally, with first-class in-app model management/download and per-hardware memory management.
 
 > MobileDiffuser began as Wenwu Tang's on-device **Core ML Stable Diffusion 3** app; this is its
 > ground-up rebuild onto a pure-**MLX** engine. The Core ML / `ml-stable-diffusion` stack is gone, and
@@ -49,6 +50,13 @@ The app talks to a single boundary, `DiffusionEngine`, and never imports a speci
   and in-app model download.
 - [`flux2-diffusion-engine`](https://github.com/nanguoyu/flux2-diffusion-engine) — a cross-platform facade
   over [`flux-2-swift-mlx`](https://github.com/nanguoyu/flux-2-swift-mlx) for FLUX.2.
+- [`SDCppEngine`](SDCppEngine) (in this repo) — the same `DiffusionEngine` boundary over
+  [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp) on its Metal backend. It runs
+  GGUF models, which MLX cannot read, and brings sd.cpp's model implementations with it, so a model
+  sd.cpp supports needs no port. Qwen-Image 2.1 is the first. Weights are memory-mapped straight into
+  Metal buffers, so they stay reclaimable file pages instead of process memory. Two small fixes to
+  sd.cpp make that and a fast VAE decode work on Metal; they live in
+  [`scripts/sdcpp-patches`](scripts/sdcpp-patches).
 
 Both models run through a `DiffusionEngine` facade, so the studio switches between them uniformly.
 Z-Image uses the generic block-streaming `MLXDiffusionEngine` on iPhone and a resident facade on
@@ -63,6 +71,7 @@ freed before the transformer streams — keeping the phone under its memory budg
 - **macOS 14+**, Xcode 16.2+ (Apple Silicon).
 - **iOS 18.2 app target** in the Xcode project. The package layer is iOS 17+, but the app target
   currently builds against 18.2.
+- **CMake** (`brew install cmake`) to build the stable-diffusion.cpp XCFramework.
 - An Apple Developer account to run on a device (signing below).
 - Current development checkouts expect sibling repositories next to this one:
   `../z-image-swift-mlx` and `../flux2-diffusion-engine`.
@@ -77,25 +86,31 @@ freed before the transformer streams — keeping the phone under its memory budg
    ```
    They should sit under the same parent directory because the Xcode project uses local package
    references during development.
-2. Open `MobileDiffuser.xcodeproj` in Xcode. Swift Package dependencies resolve automatically from
+2. Build the stable-diffusion.cpp XCFramework once (a few minutes; rerun after changing its pin
+   or patches). It is not committed:
+   ```bash
+   ./scripts/build-sdcpp-xcframework.sh
+   ```
+3. Open `MobileDiffuser.xcodeproj` in Xcode. Swift Package dependencies resolve automatically from
    the local packages and their public remote dependencies.
-3. **Signing — keeps your Apple Team ID out of the repo:**
+4. **Signing — keeps your Apple Team ID out of the repo:**
    ```bash
    cp Signing.xcconfig.example Signing.xcconfig     # Signing.xcconfig is gitignored
    # edit Signing.xcconfig: set DEVELOPMENT_TEAM = <your team id>
    ```
    The project reads code-signing from this gitignored file, so your identity never lands in the
    tracked project file.
-4. Build & run on macOS or a physical iPhone.
-5. In the app: open **Models**, pick a recipe, download the missing components, enter a prompt,
+5. Build & run on macOS or a physical iPhone.
+6. In the app: open **Models**, pick a recipe, download the missing components, enter a prompt,
    and **Generate**.
 
 ## License
 
 MobileDiffuser is licensed under the **Mozilla Public License 2.0** (see [`LICENSE`](LICENSE) and
 [`NOTICE`](NOTICE)), retaining the original Core ML release's MIT copyright. Model weights are subject to
-their own licenses (Z-Image Turbo and FLUX.2 Klein are Apache-2.0) and are not included in this
-repository.
+their own licenses (Z-Image Turbo and FLUX.2 Klein are Apache-2.0; Qwen-Image 2.1 is under the Qwen
+Research License, non-commercial) and are not included in this repository. stable-diffusion.cpp and
+ggml are MIT-licensed; the build script fetches them, so they are not included either.
 
 ## Attribution
 

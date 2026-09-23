@@ -270,15 +270,23 @@ final class AppModel {
         didSet { UserDefaults.standard.set(fluxDecoder.rawValue, forKey: "fluxDecoder") }
     }
 
-    /// Which FLUX component (by id) is downloading + its 0...1 progress, for the detail's list.
-    var fluxComponentDownloadID: String?
-    var fluxComponentFraction: Double = 0
+    /// Qwen-Image 2.1 quantizations (denoiser and text encoder), persisted across launches.
+    var qwenTransformer: QwenImage21Files.Transformer = .q4 {
+        didSet { UserDefaults.standard.set(qwenTransformer.rawValue, forKey: "qwenTransformer") }
+    }
+    var qwenEncoder: QwenImage21Files.Encoder = .q4 {
+        didSet { UserDefaults.standard.set(qwenEncoder.rawValue, forKey: "qwenEncoder") }
+    }
+
+    /// Which component (by id) is downloading + its 0...1 progress, for the detail's list.
+    var componentDownloadID: String?
+    var componentFraction: Double = 0
     /// Bytes / throughput / ETA for the active download (any of: a FLUX component, a FLUX recipe, or
     /// Z-Image), so the progress UI can show "2.3 GB / 4.6 GB · 12 MB/s · ~3m left", not a bare bar.
     var downloadMeter = DownloadMeter()
     /// A failed component download, surfaced as inline Retry — kept off the shared generation `phase`
     /// so a failed Get never leaves a sticky "Failed" on the Create canvas.
-    var fluxComponentError: (id: String, message: String)?
+    var componentError: (id: String, message: String)?
 
     static func friendlyDownloadError(_ error: Error) -> String {
         if let urlError = error as? URLError, urlError.code == .notConnectedToInternet { return "No connection" }
@@ -319,16 +327,16 @@ final class AppModel {
     }
 
     private func downloadFluxComponentUnlocked(_ id: String, operationID: UUID) async {
-        fluxComponentError = nil
-        fluxComponentDownloadID = id; fluxComponentFraction = 0
+        componentError = nil
+        componentDownloadID = id; componentFraction = 0
         downloadMeter.start(total: fluxComponents().first { $0.id == id }?.bytes ?? 0)
-        defer { fluxComponentDownloadID = nil; componentsRevision += 1 }
+        defer { componentDownloadID = nil; componentsRevision += 1 }
         do {
             try await Flux2FacadeEngine.downloadComponent(id) { fraction in
                 // Ignore a stale callback from a previous download.
                 Task { @MainActor in
-                    if self.activeOperationID == operationID, self.fluxComponentDownloadID == id {
-                        self.fluxComponentFraction = fraction
+                    if self.activeOperationID == operationID, self.componentDownloadID == id {
+                        self.componentFraction = fraction
                         self.downloadMeter.update(fraction: fraction)
                     }
                 }
@@ -336,7 +344,7 @@ final class AppModel {
         } catch is CancellationError {
             phase = .cancelled
         } catch {
-            fluxComponentError = (id, Self.friendlyDownloadError(error))
+            componentError = (id, Self.friendlyDownloadError(error))
         }
     }
 
@@ -377,6 +385,88 @@ final class AppModel {
     var fluxActiveMissing: [Flux2FacadeEngine.Flux2ComponentInfo] {
         let active = Set(fluxActiveComponentIDs)
         return fluxComponents().filter { active.contains($0.id) && !$0.isDownloaded }
+    }
+
+    // MARK: - Qwen-Image 2.1 (stable-diffusion.cpp engine)
+
+    /// The files the selected Qwen-Image quantizations run.
+    var qwenActiveFiles: [QwenImage21Files.File] { QwenImage21Files.active(qwenTransformer, qwenEncoder) }
+
+    /// The Qwen-Image reload key: another quantization is another set of weights.
+    var qwenRecipeLabel: String { "\(qwenTransformer.rawValue) + \(qwenEncoder.rawValue)" }
+
+    func isDownloaded(_ file: QwenImage21Files.File) -> Bool {
+        downloader.isDownloaded(repoId: file.repo, files: [file.path])
+    }
+
+    private func localURL(_ file: QwenImage21Files.File) -> URL {
+        downloader.localURL(repoId: file.repo).appendingPathComponent(file.path)
+    }
+
+    /// Download the given Qwen-Image files that are not on disk yet, reporting 0...1 across all of them.
+    private func downloadQwenFiles(_ files: [QwenImage21Files.File],
+                                   progress: @escaping @Sendable (Double) -> Void) async throws {
+        let missing = files.filter { !isDownloaded($0) }
+        let total = Double(max(1, missing.reduce(Int64(0)) { $0 + $1.bytes }))
+        var done: Int64 = 0
+        for file in missing {
+            let before = Double(done), bytes = Double(file.bytes)
+            try await downloader.download(repoId: file.repo, files: [file.path]) { fraction in
+                progress(min(1, (before + fraction * bytes) / total))
+            }
+            done += file.bytes
+        }
+        progress(1)
+    }
+
+    private func downloadQwenComponentUnlocked(_ id: String, operationID: UUID) async {
+        guard let file = QwenImage21Files.all.first(where: { $0.id == id }) else { return }
+        componentError = nil
+        componentDownloadID = id; componentFraction = 0
+        downloadMeter.start(total: file.bytes)
+        defer { componentDownloadID = nil; componentsRevision += 1 }
+        do {
+            try await downloadQwenFiles([file]) { fraction in
+                Task { @MainActor in
+                    if self.activeOperationID == operationID, self.componentDownloadID == id {
+                        self.componentFraction = fraction
+                        self.downloadMeter.update(fraction: fraction)
+                    }
+                }
+            }
+        } catch is CancellationError {
+            phase = .cancelled
+        } catch {
+            componentError = (id, Self.friendlyDownloadError(error))
+        }
+    }
+
+    /// Delete one Qwen-Image file. If the loaded engine runs it, unload first so generation never
+    /// reads a file that is gone.
+    private func deleteQwenComponent(_ id: String) async {
+        guard !inFlight, let file = QwenImage21Files.all.first(where: { $0.id == id }) else { return }
+        inFlight = true; defer { inFlight = false }
+        if qwenActiveFiles.contains(file), loadedID == Catalog.qwenImage21.id, let current = engine {
+            engine = nil; loadedID = nil; loadedRecipe = nil; loadedFluxStreaming = nil; loadedStreamingSeqLen = nil
+            await current.unload()
+        }
+        try? downloader.delete(repoId: file.repo, files: [file.path])
+        componentsRevision += 1
+    }
+
+    private var qwenEngineFiles: SDCppModelFiles {
+        SDCppModelFiles(diffusionModel: localURL(qwenTransformer.file),
+                        textEncoder: localURL(qwenEncoder.file),
+                        vae: localURL(QwenImage21Files.vae))
+    }
+
+    /// The catalog variant resized to the selected quantizations, so the fit badge follows the choice.
+    private var qwenVariant: ModelVariant {
+        let base = Catalog.qwenImage21.variants[0]
+        let t = qwenTransformer.file.bytes, e = qwenEncoder.file.bytes, v = QwenImage21Files.vae.bytes
+        return ModelVariant(precision: base.precision, approximateBytes: t + e + v,
+                            components: ComponentSizes(transformer: t, textEncoder: e, vae: v),
+                            layout: base.layout, source: base.source)
     }
     var fluxMissingBytes: Int64 { fluxActiveMissing.reduce(0) { $0 + $1.bytes } }
     var fluxMissingCount: Int { fluxActiveMissing.count }
@@ -425,6 +515,10 @@ final class AppModel {
            let value = Flux2FacadeEngine.FluxEncoderPrecision(rawValue: raw) { fluxEncoder = value }
         if let raw = UserDefaults.standard.string(forKey: "fluxDecoder"),
            let value = Flux2FacadeEngine.FluxDecoderPrecision(rawValue: raw) { fluxDecoder = value }
+        if let raw = UserDefaults.standard.string(forKey: "qwenTransformer"),
+           let value = QwenImage21Files.Transformer(rawValue: raw) { qwenTransformer = value }
+        if let raw = UserDefaults.standard.string(forKey: "qwenEncoder"),
+           let value = QwenImage21Files.Encoder(rawValue: raw) { qwenEncoder = value }
         Task { [libraryStore] in
             let restored = await libraryStore.load()
             await MainActor.run {
@@ -466,14 +560,14 @@ final class AppModel {
     /// Where downloaded models live (shown in Settings).
     var storageLocation: String { downloader.downloadBase.appending(component: "models").path }
 
-    /// In-app download applies to Z-Image; FLUX manages its own weights inside `load`.
-    var managesOwnDownload: Bool { selected.family != .zImage }
+    /// In-app download applies to Z-Image and Qwen-Image; FLUX manages its own weights inside `load`.
+    var managesOwnDownload: Bool { selected.family == .flux2 }
 
     var isDownloaded: Bool { isDownloaded(selected) }
 
     var isBusy: Bool {
         switch phase { case .downloading, .loading, .generating, .pausing, .paused, .cooling, .cancelling: return true; default: break }
-        if fluxComponentDownloadID != nil { return true }   // a per-component install is in flight
+        if componentDownloadID != nil { return true }   // a per-component install is in flight
         return false
     }
     var isFailed: Bool { if case .failed = phase { return true } else { return false } }
@@ -653,6 +747,8 @@ final class AppModel {
             }
             if model.family == .flux2 {
                 await self.downloadFluxComponentUnlocked(id, operationID: operationID)
+            } else if model.family == .qwenImage {
+                await self.downloadQwenComponentUnlocked(id, operationID: operationID)
             } else if model.family == .zImage {
                 self.selectedID = model.id
                 do {
@@ -683,8 +779,10 @@ final class AppModel {
             try? FileManager.default.removeItem(at: url)
         case .flux2:
             try? Flux2FacadeEngine.deleteWeights()
-        default:
-            break
+        case .qwenImage:
+            for file in QwenImage21Files.all {
+                try? downloader.delete(repoId: file.repo, files: [file.path])
+            }
         }
         phase = .idle
         componentsRevision += 1   // model-level delete changed the on-disk component set
@@ -739,13 +837,37 @@ final class AppModel {
                     selectedID: fluxDecoder.rawValue),
             ]
             return ModelRecipe(axes: axes, components: comps)
-        default:
-            return ModelRecipe()
+        case .qwenImage:
+            _ = componentsRevision   // re-read the on-disk state when it changes
+            let active = Set(qwenActiveFiles)
+            func component(_ file: QwenImage21Files.File, _ title: String, _ subtitle: String,
+                           _ kind: RecipeComponent.Kind) -> RecipeComponent {
+                RecipeComponent(id: file.id, title: title, subtitle: subtitle, kind: kind, repo: file.repo,
+                                bytes: file.bytes, isDownloaded: isDownloaded(file), isActive: active.contains(file))
+            }
+            let comps = QwenImage21Files.Transformer.allCases.map {
+                component($0.file, "Qwen-Image 2.1 \($0.label)", $0.note, .transformer)
+            } + QwenImage21Files.Encoder.allCases.map {
+                component($0.file, "Qwen3-VL 8B \($0.label)", $0.note, .textEncoder)
+            } + [component(QwenImage21Files.vae, "Qwen-Image 2.1 VAE", "bf16", .vae)]
+            let axes = [
+                PrecisionAxis(id: "qwenTransformer", title: "Model precision",
+                    options: QwenImage21Files.Transformer.allCases.map {
+                        PrecisionOption(id: $0.rawValue, label: $0.label, note: $0.note) },
+                    selectedID: qwenTransformer.rawValue),
+                PrecisionAxis(id: "qwenEncoder", title: "Text encoder",
+                    options: QwenImage21Files.Encoder.allCases.map {
+                        PrecisionOption(id: $0.rawValue, label: $0.label, note: $0.note) },
+                    selectedID: qwenEncoder.rawValue),
+            ]
+            return ModelRecipe(axes: axes, components: comps)
         }
     }
 
-    /// Apply a precision-axis choice (FLUX only today).
+    /// Apply a precision-axis choice (FLUX and Qwen-Image).
     func setPrecision(axisID: String, optionID: String) {
+        if axisID == "qwenTransformer", let v = QwenImage21Files.Transformer(rawValue: optionID) { qwenTransformer = v }
+        if axisID == "qwenEncoder", let v = QwenImage21Files.Encoder(rawValue: optionID) { qwenEncoder = v }
         if axisID == "transformer", let v = Flux2FacadeEngine.FluxTransformerPrecision(rawValue: optionID) { fluxTransformer = v }
         if axisID == "encoder", let v = Flux2FacadeEngine.FluxEncoderPrecision(rawValue: optionID) { fluxEncoder = v }
         if axisID == "decoder", let v = Flux2FacadeEngine.FluxDecoderPrecision(rawValue: optionID) {
@@ -760,7 +882,7 @@ final class AppModel {
 
     /// 0...1 progress for a component currently installing (nil if it isn't).
     func componentProgress(_ id: String, model: DiffusionModel) -> Double? {
-        if model.family == .flux2, fluxComponentDownloadID == id { return fluxComponentFraction }
+        if model.family == .flux2 || model.family == .qwenImage, componentDownloadID == id { return componentFraction }
         if model.family == .zImage, id == "zimage", selectedID == model.id,
            case .downloading(let f) = phase { return f }
         return nil
@@ -768,7 +890,7 @@ final class AppModel {
 
     /// A friendly error for a component whose last install failed (nil otherwise).
     func componentErrorMessage(_ id: String) -> String? {
-        if fluxComponentError?.id == id { return fluxComponentError?.message }
+        if componentError?.id == id { return componentError?.message }
         return nil
     }
 
@@ -780,6 +902,7 @@ final class AppModel {
     /// Remove one recipe component.
     func removeComponent(_ id: String, model: DiffusionModel) async {
         if model.family == .flux2 { await deleteFluxComponent(id); return }
+        if model.family == .qwenImage { await deleteQwenComponent(id); return }
         if model.family == .zImage { await delete(model) }
     }
 
@@ -819,8 +942,19 @@ final class AppModel {
                     }
                 }
             }
-        default:
-            break
+        case .qwenImage:
+            // The meter counts only what is still missing, so a partly installed recipe shows the
+            // real remaining size.
+            let missing = qwenActiveFiles.filter { !isDownloaded($0) }
+            downloadMeter.start(total: missing.reduce(Int64(0)) { $0 + $1.bytes })
+            try await downloadQwenFiles(missing) { fraction in
+                Task { @MainActor in
+                    if self.activeOperationID == operationID, case .downloading = self.phase {
+                        self.phase = .downloading(fraction)
+                        self.downloadMeter.update(fraction: fraction)
+                    }
+                }
+            }
         }
         try Task.checkCancellation()
         phase = .idle
@@ -853,6 +987,7 @@ final class AppModel {
                 // memory gate would be stale (an i2i-planned engine under-budgets a 1024 T2I render).
                 if fluxUsesStreaming, loadedStreamingSeqLen != streamingImageSeqLen { needsReload = true }
             }
+            if model.family == .qwenImage, loadedRecipe != qwenRecipeLabel { needsReload = true }
             if needsReload {
                 // Unload the previous engine BEFORE loading the new one, so two large weight sets
                 // are never resident at once (a model switch would otherwise peak ~10+ GB).
@@ -884,7 +1019,11 @@ final class AppModel {
                 }
                 engine = built
                 loadedID = model.id
-                loadedRecipe = (model.family == .flux2) ? fluxRecipeLabel : nil
+                loadedRecipe = switch model.family {
+                case .flux2: fluxRecipeLabel
+                case .qwenImage: qwenRecipeLabel
+                case .zImage: nil
+                }
                 loadedFluxStreaming = (model.family == .flux2) ? fluxUsesStreaming : nil
                 loadedStreamingSeqLen = (model.family == .flux2 && fluxUsesStreaming) ? streamingImageSeqLen : nil
             }
@@ -907,8 +1046,12 @@ final class AppModel {
             // reference — the iPhone budget is a single 512²-capped reference); `referenceImages`
             // (plural) feeds the macOS resident facade (1-3 references). Size is the effective size, so
             // an iPhone i2i renders 512 even if 1024 is selected.
-            let request = GenerationRequest(prompt: prompt, steps: steps, seed: seed,
-                                            size: ImageSize(width: fluxEffectiveSize, height: fluxEffectiveSize),
+            // Reference images only feed FLUX, so only FLUX's size depends on them. Guidance is the
+            // model's calibrated value (1.0 for the distilled models, real CFG for Qwen-Image).
+            let renderSize = model.family == .flux2 ? fluxEffectiveSize : size
+            let request = GenerationRequest(prompt: prompt, steps: steps,
+                                            guidance: model.architecture.defaultGuidance, seed: seed,
+                                            size: ImageSize(width: renderSize, height: renderSize),
                                             referenceImage: model.family == .flux2 ? referenceImages.first : nil,
                                             referenceImages: model.family == .flux2 ? referenceImages : [],
                                             control: control)
@@ -1009,9 +1152,9 @@ final class AppModel {
                                                        imageSeqLen: streamingImageSeqLen)
             }
             return Flux2FacadeEngine.capabilities(for: model, variant: variant, on: device)
-        default:
-            return EngineCapabilities(runnable: false, residency: .unsupported,
-                                      estimatedPeakBytes: variant.approximateBytes, note: "Unsupported")
+        case .qwenImage:
+            return SDCppDiffusionEngine.capabilities(for: model, variant: qwenVariant, on: device,
+                                                     size: ImageSize(width: size, height: size))
         }
     }
 
@@ -1023,8 +1166,8 @@ final class AppModel {
             // FLUX self-manages its weights inside the engine; ask it whether the chosen precision
             // (transformer + matching Qwen3 encoder + VAE) is on disk.
             return Flux2FacadeEngine.isDownloaded(transformer: fluxTransformer, encoder: fluxEncoder, decoder: fluxDecoder)
-        default:
-            return false
+        case .qwenImage:
+            return qwenActiveFiles.allSatisfy(isDownloaded)
         }
     }
 
@@ -1065,8 +1208,14 @@ final class AppModel {
         case .zImage:
             // Z-Image ships a single fixed-precision variant; surface it so the readout is complete.
             return model.variants.first.map { [GenerationSetting(label: "Precision", value: $0.precision.label)] } ?? []
-        default:
-            return []   // future families (e.g. qwenImage) add their own rows here
+        case .qwenImage:
+            return [
+                GenerationSetting(label: "Transformer", value: qwenTransformer.label,
+                                  axisID: "qwenTransformer", optionID: qwenTransformer.rawValue),
+                GenerationSetting(label: "Text encoder", value: qwenEncoder.label,
+                                  axisID: "qwenEncoder", optionID: qwenEncoder.rawValue),
+                GenerationSetting(label: "Guidance", value: String(format: "%g", model.architecture.defaultGuidance)),
+            ]
         }
     }
 
@@ -1169,8 +1318,8 @@ final class AppModel {
                                           targetImageSeqLen: streamingImageSeqLen)
             }
             return Flux2FacadeEngine(transformer: fluxTransformer, encoder: fluxEncoder, decoder: fluxDecoder)
-        default:
-            throw AppError.unsupportedOnPlatform("\(model.displayName) is not supported yet.")
+        case .qwenImage:
+            return SDCppDiffusionEngine(files: qwenEngineFiles)
         }
     }
 

@@ -74,7 +74,7 @@ struct ModelCard: View {
             Text("\(m.publisher) · \(m.summary)")
                 .font(.caption).foregroundStyle(Theme.textSecondary).lineLimit(2)
             HStack(spacing: Theme.Space.xs) {
-                Chip(text: m.family == .flux2 ? "FLUX.2" : "Z-Image")
+                Chip(text: m.family.label)
                 Chip(text: recipe.axes.first?.selectedOption?.label ?? m.variants[0].precision.label, filled: true)
                 Chip(text: ByteCountFormatter.string(fromByteCount: recipe.activeBytes, countStyle: .file))
                 Spacer()

@@ -44,7 +44,37 @@ enum Catalog {
             layout: .mfluxShard,
             source: ModelSource(huggingFaceRepo: "mlx-community/flux2-klein-4b-4bit"))])
 
-    static var all: [DiffusionModel] { [zImageTurbo, flux2Klein] }
+    /// Qwen-Image 2.1 runs on the stable-diffusion.cpp engine from GGUF files: the denoiser and the
+    /// Qwen3-VL text encoder come in several quantizations (picked in the model details), the VAE is
+    /// a single bf16 file. Sizes below are the defaults, Q4_K_M + UD-Q4_K_XL.
+    static let qwenImage21 = DiffusionModel(
+        id: "qwen-image-2.1-gguf",
+        displayName: "Qwen-Image 2.1 (7B)",
+        family: .qwenImage,
+        publisher: "Qwen (Alibaba)",
+        summary: "GGUF on stable-diffusion.cpp, Qwen3-VL-8B encoder",
+        license: .other(name: "Qwen Research", commercialUse: false),
+        // Not distilled: 20 steps with classifier-free guidance, the settings stable-diffusion.cpp
+        // and the GGUF publisher validate the model with.
+        architecture: ArchitectureSpec(family: .qwenImage, latentChannels: 64,
+            defaultSampler: .flowMatchEuler, defaultSteps: 20, defaultGuidance: 6.0),
+        variants: [ModelVariant(precision: .q4, approximateBytes: 10_023_774_200,
+            components: ComponentSizes(transformer: 4_199_565_024, textEncoder: 5_148_699_488, vae: 675_509_688),
+            layout: .flatSingle,
+            source: ModelSource(huggingFaceRepo: QwenImage21Files.transformerRepo))])
+
+    static var all: [DiffusionModel] { [zImageTurbo, flux2Klein, qwenImage21] }
+}
+
+extension ModelFamily {
+    /// The short family name on model cards.
+    var label: String {
+        switch self {
+        case .zImage: "Z-Image"
+        case .flux2: "FLUX.2"
+        case .qwenImage: "Qwen-Image"
+        }
+    }
 }
 
 /// Per-model UI options for the Create controls. Derived from each model's calibrated step count so
