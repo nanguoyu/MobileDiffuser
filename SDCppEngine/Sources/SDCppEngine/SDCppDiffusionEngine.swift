@@ -35,29 +35,15 @@ public actor SDCppDiffusionEngine: DiffusionEngine {
         capabilities(for: model, variant: variant, on: device, size: .square1024)
     }
 
-    /// sd.cpp keeps every component's weights for the context's lifetime, so a render needs all of
-    /// them plus its largest working set, the VAE decode, which grows with the image area.
+    /// How a render of `size` fits `device`, phase by phase (see `SDCppMemoryPlan`), with the decode
+    /// tiled when the engine would tile it.
     public static func capabilities(for model: DiffusionModel, variant: ModelVariant,
                                     on device: DeviceTier, size: ImageSize) -> EngineCapabilities {
         let c = variant.components
-        let decode = Int64(decodeBytesPerPixel * Double(size.width * size.height))
-        let peak = c.transformer + c.textEncoder + c.vae + decode
-        let budget = device.memoryBudgetBytes
-        if peak <= Int64(Double(budget) * 0.9) {
-            return EngineCapabilities(runnable: true, residency: .resident, estimatedPeakBytes: peak,
-                                      note: "Runs great")
-        }
-        if peak <= budget {
-            return EngineCapabilities(runnable: true, residency: .resident, estimatedPeakBytes: peak,
-                                      note: "Tight fit")
-        }
-        return EngineCapabilities(runnable: false, residency: .unsupported, estimatedPeakBytes: peak,
-                                  note: "Needs more memory")
+        return SDCppMemoryPlan(textEncoder: c.textEncoder, transformer: c.transformer, vae: c.vae, size: size,
+                               tiledDecode: SDCppMemoryPlan.shouldTile(size, on: device))
+            .capabilities(on: device)
     }
-
-    /// Qwen-Image 2.1's VAE decode workspace per output pixel, measured with sd.cpp on Metal
-    /// (1.95 GB at 512 x 512).
-    static let decodeBytesPerPixel: Double = 7_440
 
     public func load(_ model: DiffusionModel,
                      variant: ModelVariant,
@@ -92,8 +78,9 @@ public actor SDCppDiffusionEngine: DiffusionEngine {
                     params.max_vram = strings.make(String(format: "%.2f", gib))
                 }
                 // sd.cpp copies every path into its own storage, so the pool can go once this returns.
+                SDLog.shared.beginCall()
                 guard let raw = new_sd_ctx(&params) else {
-                    throw SDCppError.loadFailed(SDLog.shared.takeLastError())
+                    throw SDCppError.loadFailed(SDLog.shared.callError())
                 }
                 return SDContextHandle(raw)
             }
@@ -118,7 +105,12 @@ public actor SDCppDiffusionEngine: DiffusionEngine {
             guard let input = SDInputImage(image) else { throw SDCppError.unreadableImage }
             return input
         }
-        let tiledDecode = options.tiledVAEDecode
+        let tiledDecode = options.tiledVAEDecode ?? SDCppMemoryPlan.shouldTile(request.size, on: .current)
+        #if os(iOS)
+        // On iOS running out of memory ends the app, so a render that cannot fit is refused up front.
+        guard SDCppMemoryPlan(files: files, size: request.size, tiledDecode: tiledDecode)
+            .capabilities(on: .current).runnable else { throw EngineError.unsupportedOnDevice }
+        #endif
         let relay = ProgressRelay(onGenerate: progress, steps: request.steps, control: request.control) {
             sd_cancel_generation(context.raw, SD_CANCEL_ALL)
         }
@@ -131,6 +123,7 @@ public actor SDCppDiffusionEngine: DiffusionEngine {
                 return withExtendedLifetime((relay, strings, references)) {
                     // A cancel that arrived after the previous run finished must not abort this one.
                     sd_cancel_generation(context.raw, SD_CANCEL_RESET)
+                    SDLog.shared.beginCall()
                     sd_set_progress_callback(progressTrampoline, Unmanaged.passUnretained(relay).toOpaque())
                     defer { sd_set_progress_callback(nil, nil) }
 
@@ -163,7 +156,7 @@ public actor SDCppDiffusionEngine: DiffusionEngine {
                     if relay.wasCancelled { return .cancelled }
                     guard ok, count > 0, let first = images?.pointee,
                           let image = SDImage.makeCGImage(first) else {
-                        return .failed(SDLog.shared.takeLastError())
+                        return .failed(SDLog.shared.callError())
                     }
                     return .image(image)
                 }
@@ -313,13 +306,16 @@ private let progressTrampoline: sd_progress_cb_t = { step, steps, _, data in
 
 // MARK: - Logging
 
-/// Forwards sd.cpp's log to the unified log, and keeps the most recent error so a failed load or
-/// generation can say why instead of failing silently.
+/// Forwards sd.cpp's log to the unified log, and keeps the reason the current call failed so a
+/// failed load or generation can say why instead of failing silently.
 private final class SDLog: @unchecked Sendable {
     static let shared = SDLog()
     private let logger = Logger(subsystem: "MobileDiffuser", category: "sd.cpp")
     private let lock = NSLock()
-    private var lastError = ""
+    /// The first warning or error of the call that says something failed: sd.cpp reports the cause
+    /// (for instance which file could not be read) before the error that ends the call.
+    private var firstFailure = ""
+    private var firstError = ""
     private var installed = false
 
     static func installIfNeeded() {
@@ -336,19 +332,37 @@ private final class SDLog: @unchecked Sendable {
         switch level {
         case SD_LOG_ERROR:
             logger.error("\(line, privacy: .public)")
-            lock.lock(); lastError = line; lock.unlock()
+            note(line, isError: true)
         case SD_LOG_WARN:
             logger.warning("\(line, privacy: .public)")
+            note(line, isError: false)
         default:
             logger.debug("\(line, privacy: .public)")
         }
     }
 
-    /// The last error line, cleared so a later failure cannot report a stale reason.
-    func takeLastError() -> String {
-        lock.lock()
-        defer { lastError = ""; lock.unlock() }
-        return lastError
+    private func note(_ line: String, isError: Bool) {
+        lock.lock(); defer { lock.unlock() }
+        if isError && firstError.isEmpty { firstError = Self.readable(line) }
+        if firstFailure.isEmpty && line.localizedCaseInsensitiveContains("fail") { firstFailure = Self.readable(line) }
+    }
+
+    /// Starts a call into sd.cpp: a problem logged by an earlier call must not become this one's reason.
+    func beginCall() {
+        lock.lock(); firstFailure = ""; firstError = ""; lock.unlock()
+    }
+
+    /// Why the current call failed, or "" when sd.cpp logged nothing that says.
+    func callError() -> String {
+        lock.lock(); defer { lock.unlock() }
+        return firstFailure.isEmpty ? firstError : firstFailure
+    }
+
+    /// Drops sd.cpp's "file.cpp:123 - " origin and shortens quoted paths ('/…/models/x.gguf') to the
+    /// file name: the reason is shown to people.
+    static func readable(_ line: String) -> String {
+        line.replacingOccurrences(of: "^[A-Za-z0-9_.]+:[0-9]+ *- *", with: "", options: .regularExpression)
+            .replacingOccurrences(of: "'[^']*/([^'/]+)'", with: "$1", options: .regularExpression)
     }
 }
 

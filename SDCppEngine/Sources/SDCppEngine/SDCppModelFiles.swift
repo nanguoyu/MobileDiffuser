@@ -38,11 +38,12 @@ public struct SDCppOptions: Sendable, Hashable {
     /// splits the graph and prefetches the next segment's weights to stay inside it. `nil` lets
     /// sd.cpp size itself from the memory that is free when the model loads.
     public var gpuBudgetGiB: Double?
-    /// Decode the latent in tiles. Slower, but bounds the decoder's peak at large sizes.
-    public var tiledVAEDecode: Bool
+    /// Decode the latent in tiles: slower, but the decoder's workspace stays that of one tile. `nil`
+    /// tiles only the renders whose untiled decode would take a large share of the device's memory.
+    public var tiledVAEDecode: Bool?
 
     public init(memoryMapWeights: Bool = true, flashAttention: Bool = true,
-                gpuBudgetGiB: Double? = nil, tiledVAEDecode: Bool = false) {
+                gpuBudgetGiB: Double? = nil, tiledVAEDecode: Bool? = nil) {
         self.memoryMapWeights = memoryMapWeights
         self.flashAttention = flashAttention
         self.gpuBudgetGiB = gpuBudgetGiB

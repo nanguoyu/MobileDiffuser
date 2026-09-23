@@ -311,6 +311,7 @@ final class AppModel {
             case .invalidRequest(let m): return m
             }
         }
+        if let e = error as? SDCppError, let message = e.errorDescription { return message }
         return "Something went wrong. Tap Generate to try again, or pick a smaller size."
     }
 

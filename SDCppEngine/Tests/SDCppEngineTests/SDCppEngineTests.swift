@@ -162,6 +162,44 @@ final class SDImageTests: XCTestCase {
     }
 }
 
+final class MemoryPlanTests: XCTestCase {
+    private let mac32 = DeviceTier(physicalMemoryBytes: 34_359_738_368, isPhone: false)
+    private let mac16 = DeviceTier(physicalMemoryBytes: 17_179_869_184, isPhone: false)
+    private let phone8 = DeviceTier(physicalMemoryBytes: 8_589_934_592, isPhone: true)
+    private let square512 = ImageSize(width: 512, height: 512)
+
+    /// Q4_K_M denoiser, UD-Q4_K_XL encoder, bf16 VAE.
+    private func plan(_ size: ImageSize, tiled: Bool) -> SDCppMemoryPlan {
+        SDCppMemoryPlan(textEncoder: 5_148_699_488, transformer: 4_199_565_024, vae: 675_509_688,
+                        size: size, tiledDecode: tiled)
+    }
+
+    func testPeakIsTheLargestPhaseNotTheSumOfWeights() {
+        let small = plan(square512, tiled: false)
+        XCTAssertEqual(small.peak, 5_148_699_488, "at 512 the text encoder phase dominates")
+        let large = plan(.square1024, tiled: false)
+        XCTAssertEqual(large.peak, 675_509_688 + SDCppMemoryPlan.untiledDecodeWorkspace(.square1024),
+                       "an untiled 1024 decode dominates")
+        XCTAssertLessThan(plan(.square1024, tiled: true).peak, large.peak)
+    }
+
+    func testTilingIsKeptForRendersThatNeedIt() {
+        XCTAssertFalse(SDCppMemoryPlan.shouldTile(square512, on: mac16))
+        XCTAssertTrue(SDCppMemoryPlan.shouldTile(.square1024, on: mac16))
+        XCTAssertFalse(SDCppMemoryPlan.shouldTile(.square1024, on: mac32))
+        XCTAssertTrue(SDCppMemoryPlan.shouldTile(.square1024, on: phone8))
+    }
+
+    func testFitFollowsTheDevice() {
+        let caps = { (device: DeviceTier, size: ImageSize) in
+            self.plan(size, tiled: SDCppMemoryPlan.shouldTile(size, on: device)).capabilities(on: device)
+        }
+        XCTAssertTrue(caps(mac32, .square1024).runnable)
+        XCTAssertTrue(caps(mac16, .square1024).runnable)
+        XCTAssertFalse(caps(phone8, square512).runnable, "the 5 GB encoder alone is past a phone's budget")
+    }
+}
+
 final class SDCppDiffusionEngineTests: XCTestCase {
 
     func testMissingFileIsReportedBeforeLoading() async {
@@ -214,7 +252,8 @@ final class SDCppDiffusionEngineTests: XCTestCase {
                                   progress: { _ in })
             XCTFail("load must fail")
         } catch SDCppError.loadFailed(let detail) {
-            XCTAssertFalse(detail.isEmpty, "the failure should carry sd.cpp's reason")
+            XCTAssertTrue(detail.contains("dit.gguf"), "the reason names the file that failed: \(detail)")
+            XCTAssertFalse(detail.contains("/"), "file names, not full paths: \(detail)")
         } catch {
             XCTFail("unexpected error: \(error)")
         }
