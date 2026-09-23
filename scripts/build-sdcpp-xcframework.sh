@@ -3,12 +3,16 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at https://mozilla.org/MPL/2.0/.
 #
-# Build the stable-diffusion.cpp XCFramework that SDCppEngine vendors.
+# Build the stable-diffusion.cpp XCFramework that SDCppEngine links.
 #
-# The framework is NOT committed. This script clones stable-diffusion.cpp (and its patched ggml
-# submodule) at a pinned commit, builds a static library for macOS, iOS and the iOS simulator with
-# the Metal backend embedded (no .metallib to ship), merges each slice's static libraries into one,
-# and packages them with the public C header and a module map. Re-run after a fresh clone.
+# The framework is not committed: SwiftPM downloads the build published in this repository's
+# releases (see SDCppEngine/Package.swift). Run this script to change the stable-diffusion.cpp
+# version or its patches. It clones stable-diffusion.cpp (and its patched ggml submodule) at a
+# pinned commit, applies scripts/sdcpp-patches, builds a static library for macOS, iOS and the iOS
+# simulator with the Metal backend embedded (no .metallib to ship), merges each slice's static
+# libraries into one, and packages them with the public C header and a module map into
+# SDCppEngine/Vendor, where a local build takes precedence over the download. It also writes the
+# zip to publish as a new release and prints the checksum Package.swift pins it with.
 #
 #   ./scripts/build-sdcpp-xcframework.sh
 #
@@ -111,4 +115,10 @@ xcodebuild -create-xcframework \
     -library "$WORK/out/ios-simulator/libsdcpp.a" -headers "$HEADERS" \
     -output "$DEST" > "$WORK/xcframework.log" 2>&1
 
+# The release asset: SwiftPM wants the .xcframework at the root of a zip, pinned by its SHA-256.
+ZIP="$WORK/sdcpp.xcframework.zip"
+rm -f "$ZIP"
+ditto -c -k --keepParent "$DEST" "$ZIP"
+
 echo "Done. $(du -sh "$DEST" | cut -f1) at $DEST (stable-diffusion.cpp $SDCPP_TAG)"
+echo "Release asset: $ZIP ($(du -h "$ZIP" | cut -f1)), checksum $(shasum -a 256 "$ZIP" | cut -d' ' -f1)"
