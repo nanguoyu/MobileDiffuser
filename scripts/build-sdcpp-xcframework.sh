@@ -115,10 +115,26 @@ xcodebuild -create-xcframework \
     -library "$WORK/out/ios-simulator/libsdcpp.a" -headers "$HEADERS" \
     -output "$DEST" > "$WORK/xcframework.log" 2>&1
 
+# The libraries carry stable-diffusion.cpp, ggml and the third-party code sd.cpp compiles in (zip
+# and miniz are public domain); their licenses travel with the binary.
+LICENSES="$DEST/Licenses"
+mkdir -p "$LICENSES"
+cp "$SRC/LICENSE" "$LICENSES/stable-diffusion.cpp.txt"
+cp "$SRC/ggml/LICENSE" "$LICENSES/ggml.txt"
+cp "$SRC/thirdparty/oniguruma/COPYING" "$LICENSES/oniguruma.txt"
+cp "$SRC/thirdparty/utf8proc/LICENSE.md" "$LICENSES/utf8proc.md"
+cp "$SRC/thirdparty/LICENSE.darts_clone.txt" "$LICENSES/darts-clone.txt"
+{
+    echo "JSON for Modern C++ (json.hpp): MIT License"
+    echo
+    grep -m1 'SPDX-FileCopyrightText' "$SRC/thirdparty/json.hpp" | sed 's#^// SPDX-FileCopyrightText: #Copyright (c) #'
+    tail -n +4 "$SRC/LICENSE"   # the MIT permission notice, after sd.cpp's own copyright line
+} > "$LICENSES/nlohmann-json.txt"
+
 # The release asset: SwiftPM wants the .xcframework at the root of a zip, pinned by its SHA-256.
 ZIP="$WORK/sdcpp.xcframework.zip"
 rm -f "$ZIP"
-ditto -c -k --keepParent "$DEST" "$ZIP"
+ditto -c -k --norsrc --noextattr --keepParent "$DEST" "$ZIP"   # no AppleDouble ._ files
 
 echo "Done. $(du -sh "$DEST" | cut -f1) at $DEST (stable-diffusion.cpp $SDCPP_TAG)"
 echo "Release asset: $ZIP ($(du -h "$ZIP" | cut -f1)), checksum $(shasum -a 256 "$ZIP" | cut -d' ' -f1)"
