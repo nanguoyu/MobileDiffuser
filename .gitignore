@@ -60,3 +60,8 @@ MobileDiffuser/Preview Content/CoreMLModels/
 # Local code-signing config (your Team ID stays out of the repo).
 # Copy Signing.xcconfig.example -> Signing.xcconfig and fill in your team.
 Signing.xcconfig
+
+# stable-diffusion.cpp engine: build tree and the vendored XCFramework (rebuilt by
+# scripts/build-sdcpp-xcframework.sh, never committed)
+.sdcpp-build/
+SDCppEngine/Vendor/
