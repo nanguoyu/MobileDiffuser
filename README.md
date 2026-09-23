@@ -59,9 +59,9 @@ The app talks to a single boundary, `DiffusionEngine`, and never imports a speci
   [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp) on its Metal backend. It runs
   GGUF models, which MLX cannot read, and brings sd.cpp's model implementations with it, so a model
   sd.cpp supports needs no port. Qwen-Image 2.1 is the first. Weights are memory-mapped straight into
-  Metal buffers, so they stay reclaimable file pages instead of process memory. Two small fixes to
-  sd.cpp make that and a fast VAE decode work on Metal; they live in
-  [`scripts/sdcpp-patches`](scripts/sdcpp-patches).
+  Metal buffers, so they stay reclaimable file pages instead of process memory. The sd.cpp fix that
+  makes this work on Metal is applied from [`scripts/sdcpp-patches`](scripts/sdcpp-patches) until
+  upstream merges it ([leejet/stable-diffusion.cpp#2037](https://github.com/leejet/stable-diffusion.cpp/pull/2037)).
 
 Both models run through a `DiffusionEngine` facade, so the studio switches between them uniformly.
 Z-Image uses the generic block-streaming `MLXDiffusionEngine` on iPhone and a resident facade on

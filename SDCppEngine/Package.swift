@@ -20,8 +20,8 @@ let stableDiffusionCpp: Target =
     ? .binaryTarget(name: "StableDiffusionCpp", path: localFramework)
     : .binaryTarget(
         name: "StableDiffusionCpp",
-        url: "https://github.com/nanguoyu/MobileDiffuser/releases/download/sdcpp-master-900-c92d73c.1/sdcpp.xcframework.zip",
-        checksum: "3cadfeb7a6d43e0416f0f6e6ff0ec2f5723bd911c890de2483a1a050f523533f")
+        url: "https://github.com/nanguoyu/MobileDiffuser/releases/download/sdcpp-2a4ebba.1/sdcpp.xcframework.zip",
+        checksum: "9a5821d6691f516034505d65e6d09149ef856b385a9efe9db1792e4e46e7161a")
 
 let package = Package(
     name: "SDCppEngine",
