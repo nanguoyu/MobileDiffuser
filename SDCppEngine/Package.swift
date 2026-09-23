@@ -7,9 +7,21 @@
 // `DiffusionEngine` protocol as the MLX engines. It runs GGUF models, which MLX cannot read,
 // and brings sd.cpp's own model implementations with it, so a model it supports needs no port.
 //
-// The XCFramework is not committed; build it with `scripts/build-sdcpp-xcframework.sh`.
+// stable-diffusion.cpp comes as a prebuilt XCFramework published in this repository's releases.
+// `scripts/build-sdcpp-xcframework.sh` builds it; a framework it built locally into Vendor/ takes
+// precedence over the download, so a new sd.cpp version or patch can be tried before it is released.
 
+import Foundation
 import PackageDescription
+
+let localFramework = "Vendor/sdcpp.xcframework"
+let stableDiffusionCpp: Target =
+    FileManager.default.fileExists(atPath: Context.packageDirectory + "/" + localFramework)
+    ? .binaryTarget(name: "StableDiffusionCpp", path: localFramework)
+    : .binaryTarget(
+        name: "StableDiffusionCpp",
+        url: "https://github.com/nanguoyu/MobileDiffuser/releases/download/sdcpp-master-900-c92d73c.1/sdcpp.xcframework.zip",
+        checksum: "3cadfeb7a6d43e0416f0f6e6ff0ec2f5723bd911c890de2483a1a050f523533f")
 
 let package = Package(
     name: "SDCppEngine",
@@ -19,7 +31,7 @@ let package = Package(
         .package(url: "https://github.com/nanguoyu/swift-diffusion-core", branch: "main"),
     ],
     targets: [
-        .binaryTarget(name: "StableDiffusionCpp", path: "Vendor/sdcpp.xcframework"),
+        stableDiffusionCpp,
         .target(
             name: "SDCppEngine",
             dependencies: [
