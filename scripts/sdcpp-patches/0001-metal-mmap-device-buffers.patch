@@ -1,16 +1,20 @@
 Map memory-mapped weights through the compute device's own host-pointer buffer.
 
+Submitted upstream as https://github.com/leejet/stable-diffusion.cpp/pull/2037; drop this patch once
+the pinned commit includes it.
+
 sd.cpp enables mmap when the compute backend can wrap host memory (Metal on unified memory), but it
 always wraps the mapping in a CPU buffer. Metal kernels cannot address a CPU buffer, and nothing
 stages the weights because the params backend already is the compute backend, so every mapped
 weight fails with "ggml_metal_buffer_get_id: error: tensor ... buffer is nil" and the output is
 garbage. This maps each file once per device with buffer_from_host_ptr (Metal wraps the mapping
 without copying it) and lets the loader skip reading those tensors, as it does for CPU mappings.
+Writable mappings, used when LoRAs are merged in place, are left to the normal loading path.
 
 Applied by scripts/build-sdcpp-xcframework.sh on top of the pinned stable-diffusion.cpp commit.
 
 diff --git a/src/model_loader.cpp b/src/model_loader.cpp
-index ee5aa49..e827450 100644
+index ee5aa49..4dffdfe 100644
 --- a/src/model_loader.cpp
 +++ b/src/model_loader.cpp
 @@ -874,7 +874,8 @@ void ModelLoader::process_model_files(bool enable_mmap, bool writable_mmap) {
@@ -23,15 +27,14 @@ index ee5aa49..e827450 100644
      std::set<std::string> names;
      for (const auto& entry : tensors) {
          names.insert(entry.first);
-@@ -896,6 +897,42 @@ std::vector<MmapTensorStore> ModelLoader::mmap_tensors(std::map<std::string, ggm
+@@ -896,6 +897,39 @@ std::vector<MmapTensorStore> ModelLoader::mmap_tensors(std::map<std::string, ggm
          if (!fdata.mmbuffer)
              continue;
  
-+        // The buffer the file's tensors are mapped through. For a device it is created on the first
-+        // requested tensor, so a file that holds none of them is never wrapped (a device buffer
-+        // registers the whole file with the device's residency).
++        // Wrapped on first use: a device buffer makes the whole file resident on that device.
 +        std::shared_ptr<struct ggml_backend_buffer> file_buffer = device == nullptr ? fdata.mmbuffer : nullptr;
-+        bool file_unmappable = false;
++        bool file_unmappable                                    = false;
++
 +        auto buffer_for_file = [&]() -> ggml_backend_buffer_t {
 +            if (file_buffer || file_unmappable) {
 +                return file_buffer.get();
@@ -41,8 +44,6 @@ index ee5aa49..e827450 100644
 +                file_buffer = cached->second;
 +                return file_buffer.get();
 +            }
-+            // A mapping larger than the device's maximum buffer is split into overlapping views;
-+            // the overlap must hold the largest tensor so none straddles two views.
 +            size_t max_tensor_size = 0;
 +            for (const auto& ts : fdata.tensors) {
 +                max_tensor_size = std::max(max_tensor_size, static_cast<size_t>(ts.nbytes()));
@@ -66,21 +67,19 @@ index ee5aa49..e827450 100644
          const std::vector<TensorStorage>& file_tensors = fdata.tensors;
  
          size_t file_mapped_bytes   = 0;
-@@ -944,8 +981,11 @@ std::vector<MmapTensorStore> ModelLoader::mmap_tensors(std::map<std::string, ggm
+@@ -944,7 +978,10 @@ std::vector<MmapTensorStore> ModelLoader::mmap_tensors(std::map<std::string, ggm
                  continue;
              }
  
 -            ggml_backend_buffer_t buf_mmap = fdata.mmbuffer.get();
--            uint8_t* mmap_data             = static_cast<uint8_t*>(ggml_backend_buffer_get_base(buf_mmap));
 +            ggml_backend_buffer_t buf_mmap = buffer_for_file();
 +            if (buf_mmap == nullptr) {
-+                break;  // the device cannot map this file; load_tensors reads it instead
++                break;
 +            }
-+            uint8_t* mmap_data = static_cast<uint8_t*>(ggml_backend_buffer_get_base(buf_mmap));
+             uint8_t* mmap_data             = static_cast<uint8_t*>(ggml_backend_buffer_get_base(buf_mmap));
              dst_tensor->buffer             = buf_mmap;
              dst_tensor->data               = mmap_data + tensor_offset;
- 
-@@ -956,7 +996,7 @@ std::vector<MmapTensorStore> ModelLoader::mmap_tensors(std::map<std::string, ggm
+@@ -956,7 +993,7 @@ std::vector<MmapTensorStore> ModelLoader::mmap_tensors(std::map<std::string, ggm
          if (file_mapped_bytes > 0) {
              mapped_tensors += file_mapped_tensors;
              mapped_bytes += file_mapped_bytes;
@@ -89,12 +88,7 @@ index ee5aa49..e827450 100644
          }
      }
  
-@@ -1111,10 +1151,15 @@ bool ModelLoader::load_tensors(on_new_tensor_cb_t on_new_tensor_cb,
-                         break;
-                     }
- 
--                    // skip mmapped tensors
-+                    // skip mmapped tensors, whether mapped for the CPU or through a device
+@@ -1115,6 +1152,11 @@ bool ModelLoader::load_tensors(on_new_tensor_cb_t on_new_tensor_cb,
                      if (dst_tensor->buffer != nullptr && dst_tensor->buffer == fdata.mmbuffer.get()) {
                          continue;
                      }
@@ -107,25 +101,20 @@ index ee5aa49..e827450 100644
                      size_t nbytes_to_read = tensor_storage.nbytes_to_read();
  
 diff --git a/src/model_loader.h b/src/model_loader.h
-index c5335b5..ae77e49 100644
+index c5335b5..b6be865 100644
 --- a/src/model_loader.h
 +++ b/src/model_loader.h
-@@ -20,6 +20,9 @@ struct ModelFileData {
+@@ -20,6 +20,8 @@ struct ModelFileData {
      std::vector<TensorStorage> tensors;
      std::shared_ptr<MmapWrapper> mmapped;
      std::shared_ptr<struct ggml_backend_buffer> mmbuffer;
-+    // The same mapping wrapped as a device buffer (e.g. Metal on unified memory), one per device,
-+    // so a GPU backend can compute on the mapped weights without a copy.
++    // mmapped wrapped by devices that can use host memory in place (buffer_from_host_ptr)
 +    std::map<ggml_backend_dev_t, std::shared_ptr<struct ggml_backend_buffer>> device_mmbuffers;
      bool is_zip;
  };
  
-@@ -118,9 +121,12 @@ public:
-     void set_n_threads(int n_threads);
-     void set_wtype_override(ggml_type wtype, std::string tensor_type_rules = "");
+@@ -120,7 +122,8 @@ public:
      void process_model_files(bool enable_mmap = false, bool writable_mmap = true);
-+    // With `device`, tensors are mapped through a buffer that device creates from the mapped
-+    // memory (buffer_from_host_ptr) instead of a CPU buffer, so it can compute on them in place.
      std::vector<MmapTensorStore> mmap_tensors(std::map<std::string, ggml_tensor*>& tensors,
                                                std::set<std::string> ignore_tensors = {},
 -                                              bool writable                        = true);
@@ -135,19 +124,17 @@ index c5335b5..ae77e49 100644
                        bool use_mmap                                    = false,
                        const std::set<std::string>* target_tensor_names = nullptr,
 diff --git a/src/model_manager.cpp b/src/model_manager.cpp
-index 930c6f4..f6361a0 100644
+index 930c6f4..aba32e7 100644
 --- a/src/model_manager.cpp
 +++ b/src/model_manager.cpp
-@@ -780,38 +780,49 @@ bool ModelManager::validate_tensor(const TensorState& state) const {
+@@ -780,38 +780,52 @@ bool ModelManager::validate_tensor(const TensorState& state) const {
  
  bool ModelManager::mmap_params(const std::vector<TensorState*>& states,
                                 std::vector<ParamsStorageBlock*>& created_storage_blocks) {
 -    std::map<std::string, ggml_tensor*> mmap_candidates;
 -    std::map<std::string, TensorState*> mmap_states;
-+    // Tensors computed on the CPU (or kept in CPU params) use the CPU mapping. Tensors computed
-+    // on a device that can wrap host memory (Metal on unified memory) must use a buffer of that
-+    // device: its kernels cannot address a CPU buffer, and nothing stages them because the
-+    // params backend is already the compute backend.
++    // A GPU that computes on mmapped params in place cannot address a CPU buffer, and nothing
++    // stages them for it, so they are mapped through a buffer of that GPU's device.
 +    struct MmapGroup {
 +        std::map<std::string, ggml_tensor*> candidates;
 +        std::map<std::string, TensorState*> states;
@@ -167,7 +154,7 @@ index 930c6f4..f6361a0 100644
 +        if (!sd_backend_is_cpu(state->compute_backend) && !sd_backend_is_cpu(state->params_backend)) {
 +            device = ggml_backend_get_device(state->compute_backend);
 +        }
-+        MmapGroup& group             = groups[device];
++        MmapGroup& group              = groups[device];
 +        group.candidates[state->name] = state->tensor;
 +        group.states[state->name]     = state;
      }
@@ -177,6 +164,11 @@ index 930c6f4..f6361a0 100644
 -        return true;
 -    }
 +    for (auto& [device, group] : groups) {
++        // Device buffers wrap read-only mappings only; params that LoRAs are merged into in place
++        // are loaded instead.
++        if (device != nullptr && writable_mmap_) {
++            continue;
++        }
 +        auto mmap_store = model_loader_.mmap_tensors(group.candidates, {}, writable_mmap_, device);
 +        if (mmap_store.empty()) {
 +            continue;

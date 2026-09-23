@@ -19,9 +19,9 @@
 # Requirements: Xcode + CMake. Takes a few minutes.
 set -euo pipefail
 
-# master-900: the first tag carrying Qwen-Image-2.1 (#1994) together with its RGBA input fix (#2021).
-SDCPP_TAG="master-900-c92d73c"
-SDCPP_COMMIT="c92d73c"
+# master on 2026-09-23: Qwen Image 2.1 with its prefix KV cache (#2035) and the one-frame Wan VAE 2D
+# convolution (#2038). Not tagged yet, so it is pinned by commit.
+SDCPP_COMMIT="2a4ebba818e2ebd273769b1069c123bce4cc2bb4"
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DEST="$ROOT/SDCppEngine/Vendor/sdcpp.xcframework"
@@ -30,16 +30,18 @@ SRC="$WORK/stable-diffusion.cpp"
 JOBS="$(sysctl -n hw.perflevel0.physicalcpu 2>/dev/null || sysctl -n hw.ncpu)"
 
 if [ ! -d "$SRC/.git" ]; then
-    echo "Cloning stable-diffusion.cpp $SDCPP_TAG into $SRC …"
+    echo "Cloning stable-diffusion.cpp ${SDCPP_COMMIT:0:7} into $SRC …"
     mkdir -p "$WORK"
-    git clone --depth 1 --branch "$SDCPP_TAG" --recurse-submodules --shallow-submodules \
-        https://github.com/leejet/stable-diffusion.cpp "$SRC"
+    git clone --quiet --filter=blob:none --no-checkout https://github.com/leejet/stable-diffusion.cpp "$SRC"
+    git -C "$SRC" checkout --quiet --detach "$SDCPP_COMMIT"
 fi
-actual="$(git -C "$SRC" rev-parse --short=7 HEAD)"
+actual="$(git -C "$SRC" rev-parse HEAD)"
 if [ "$actual" != "$SDCPP_COMMIT" ]; then
-    echo "error: $SRC is at $actual, expected $SDCPP_COMMIT. Remove $WORK and re-run." >&2
+    echo "error: $SRC is at ${actual:0:7}, expected ${SDCPP_COMMIT:0:7}. Remove $WORK and re-run." >&2
     exit 1
 fi
+# Only ggml is built; the WebP, WebM and server-frontend submodules stay out.
+git -C "$SRC" submodule update --quiet --init --depth 1 ggml
 
 # Local fixes on top of the pinned commit; each patch explains itself in its header.
 for patch in "$ROOT"/scripts/sdcpp-patches/*.patch; do
@@ -136,5 +138,5 @@ ZIP="$WORK/sdcpp.xcframework.zip"
 rm -f "$ZIP"
 ditto -c -k --norsrc --noextattr --keepParent "$DEST" "$ZIP"   # no AppleDouble ._ files
 
-echo "Done. $(du -sh "$DEST" | cut -f1) at $DEST (stable-diffusion.cpp $SDCPP_TAG)"
+echo "Done. $(du -sh "$DEST" | cut -f1) at $DEST (stable-diffusion.cpp ${SDCPP_COMMIT:0:7})"
 echo "Release asset: $ZIP ($(du -h "$ZIP" | cut -f1)), checksum $(shasum -a 256 "$ZIP" | cut -d' ' -f1)"
