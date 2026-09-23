@@ -16,12 +16,17 @@ locally, with first-class in-app model management/download and per-hardware memo
 
 ## Status
 
-- **macOS: working.** The app builds and generates with two models behind one studio UI, for both
-  text-to-image and image-to-image.
+- **macOS: working.** The app builds and generates behind one studio UI, for both text-to-image
+  and image-to-image.
   - **Z-Image Turbo (6B)** — single-stream S3-DiT + Qwen3-4B text encoder, 8-step, 4-bit. Pure
     Swift+MLX port; validated end-to-end on macOS and on iPhone through block streaming.
   - **FLUX.2 Klein (4B)** — cross-platform facade over `flux-2-swift-mlx`; 4-bit uses the
     pre-quantized `mlx-community/flux2-klein-4b-4bit` checkpoint on both Mac and iPhone.
+  - **Qwen-Image 2.1 (7B)** — GGUF on the stable-diffusion.cpp engine, Qwen3-VL-8B text encoder,
+    20 steps with guidance 6. On an M1 Pro (Q4_K_M + UD-Q4_K_XL) a 512px render takes about 6
+    minutes and a 1024px one about 27; memory-mapped weights keep the process footprint near 2 GB.
+    Not enabled on iPhone yet: its memory plan is calibrated on the Mac only, so the engine declines
+    renders there.
   - **Image-to-image** is FLUX.2 reference-context: 1–3 reference images are VAE-encoded and
     concatenated into the transformer sequence as conditioning, and the output denoises from pure
     noise while attending to them (editing / style / composition — not a strength slider). On Mac,
