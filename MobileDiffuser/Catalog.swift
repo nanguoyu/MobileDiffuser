@@ -86,9 +86,9 @@ struct StepSettings {
 
 extension Catalog {
     /// Steps per model on a Mac and on a phone. The distilled models are step-sensitive and run
-    /// around their native count everywhere. Qwen-Image 2.1 is not distilled: a Mac starts at the 20
-    /// steps it is validated with (40 is the model card's full-quality setting); a phone takes about
-    /// a minute per step, so it starts at 10 and stops at 20.
+    /// around their native count everywhere. Qwen-Image 2.1 is not step-distilled: a Mac starts at 20
+    /// steps (the model card runs 40); a phone takes about half a minute per step, so it starts at 10
+    /// and stops at 20.
     static let steps: [String: (mac: StepSettings, phone: StepSettings)] = [
         zImageTurbo.id: (mac: StepSettings(initial: 8, choices: [4, 8, 16]),
                          phone: StepSettings(initial: 8, choices: [4, 8, 16])),

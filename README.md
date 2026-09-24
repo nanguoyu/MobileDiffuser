@@ -23,8 +23,9 @@ locally, with first-class in-app model management/download and per-hardware memo
   - **FLUX.2 Klein (4B)** — cross-platform facade over `flux-2-swift-mlx`; 4-bit uses the
     pre-quantized `mlx-community/flux2-klein-4b-4bit` checkpoint on both Mac and iPhone.
   - **Qwen-Image 2.1 (7B)** — GGUF on the stable-diffusion.cpp engine, Qwen3-VL-8B text encoder,
-    20 steps with guidance 6. On an M1 Pro (Q4_K_M + UD-Q4_K_XL) a 512px render takes about 6
-    minutes and a 1024px one about 27; memory-mapped weights keep the process footprint near 2 GB.
+    20 steps without guidance, as the reference pipeline samples it. On an M1 Pro (Q4_K_M +
+    UD-Q4_K_XL) a 512px render takes about 3 minutes and a 1024px one about 14; memory-mapped
+    weights keep the process footprint near 2 GB.
   - **Image-to-image** is FLUX.2 reference-context: 1–3 reference images are VAE-encoded and
     concatenated into the transformer sequence as conditioning, and the output denoises from pure
     noise while attending to them (editing / style / composition — not a strength slider). On Mac,
@@ -36,7 +37,7 @@ locally, with first-class in-app model management/download and per-hardware memo
     - **1024px** — block-streaming transformer (one block resident at a time) plus seam-free,
       bit-exact conv-striped VAE decode, about 3.83 GB peak, about 4m22s. A cheap latent preview
       shows the image forming during generation.
-  - Qwen-Image 2.1 7B, 512px: 20 steps in about 23 minutes (the phone starts at 10), peak about
+  - Qwen-Image 2.1 7B, 512px: 10 steps (the phone's default) in about 5.5 minutes, peak about
     2.6 GB. On a phone sd.cpp runs under a GPU budget of 30% of the RAM, so the text encoder and the
     denoiser run in segments that read their weights from flash as they go.
   - FLUX.2 Klein 4B **image-to-image** (reference-context, 512px) runs on iPhone via the
