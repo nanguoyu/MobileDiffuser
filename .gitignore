@@ -65,3 +65,6 @@ Signing.xcconfig
 # scripts/build-sdcpp-xcframework.sh, never committed)
 .sdcpp-build/
 SDCppEngine/Vendor/
+
+# The signed macOS release build (scripts/package-mac-app.sh)
+.mac-release/

@@ -73,6 +73,12 @@ one block at a time. For image-to-image, the streamed sequence carries the refer
 alongside the output, only the output tokens are denoised and decoded, and the reference VAE is
 freed before the transformer streams — keeping the phone under its memory budget.
 
+## Download
+
+The Mac app is on the [Releases](https://github.com/nanguoyu/MobileDiffuser/releases/latest) page,
+signed with a Developer ID and notarized. It needs a Mac with Apple silicon and macOS 14 or later.
+Unzip it, move `MobileDiffuser.app` to Applications, and download models inside the app.
+
 ## Requirements
 
 - **macOS 14+**, Xcode 16.2+ (Apple Silicon).
@@ -110,6 +116,11 @@ To change the stable-diffusion.cpp version or its patches, run `./scripts/build-
 (needs CMake, `brew install cmake`). The framework it builds into `SDCppEngine/Vendor` takes
 precedence over the released one; publish its zip as a new release and point
 `SDCppEngine/Package.swift` at it with the checksum the script prints.
+
+To build the Mac app for a release, run `./scripts/package-mac-app.sh`. It archives the app for Apple
+silicon, signs it with the Developer ID certificate of the team in `Signing.xcconfig`, has Apple
+notarize it through the account signed in to Xcode, and writes the zip with the app and its license
+notices to `.mac-release/`.
 
 ## License
 
