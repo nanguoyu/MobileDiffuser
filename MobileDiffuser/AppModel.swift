@@ -614,11 +614,14 @@ final class AppModel {
         }
     }
 
-    /// Reset Steps + Size to the selected model's native values, clamped per device (a phone defaults
-    /// to 512 for memory). Called on launch and whenever the model changes, so the controls always
+    /// Reset Steps + Size to the selected model's defaults for this device (a phone defaults to 512
+    /// for memory, and to fewer steps where a step is slow there). Called on launch and whenever the model changes, so the controls always
     /// reflect what the current model is calibrated for rather than a fixed global set.
+    /// The step options Create offers for the selected model on this device.
+    var stepChoices: [Int] { selected.stepSettings(onPhone: device.isPhone).choices }
+
     func applyModelDefaults() {
-        steps = selected.defaultStepCount
+        steps = selected.stepSettings(onPhone: device.isPhone).initial
         size = device.isPhone ? min(512, selected.nativeSize) : selected.nativeSize
     }
 

@@ -295,7 +295,7 @@ struct PromptBar: View {
                         .disabled(model.isBusy)
                 }
                 labeledControl("Steps") {
-                    Segmented(selection: $model.steps, options: model.selected.stepChoices) { "\($0)" }
+                    Segmented(selection: $model.steps, options: model.stepChoices) { "\($0)" }
                         .disabled(model.isBusy)
                 }
                 labeledControl("Seed") {

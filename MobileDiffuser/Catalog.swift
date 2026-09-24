@@ -77,17 +77,34 @@ extension ModelFamily {
     }
 }
 
-/// Per-model UI options for the Create controls. Derived from each model's calibrated step count so
-/// the choices scale to any future model instead of a single hardcoded global set — distilled models
-/// are step-sensitive, so the options stay centered on the model's native count.
-extension DiffusionModel {
-    /// Recommended (native) sampling steps for this model.
-    var defaultStepCount: Int { architecture.defaultSteps }
+/// Sampling steps for one model on one kind of device: the default and the options in Create.
+struct StepSettings {
+    let initial: Int
+    let choices: [Int]
+}
 
-    /// Step options shown in Create: a fast / native / quality triad around the calibrated count.
-    var stepChoices: [Int] {
+extension Catalog {
+    /// Steps per model on a Mac and on a phone. The distilled models are step-sensitive and run
+    /// around their native count everywhere. Qwen-Image 2.1 is not distilled: a Mac starts at the 20
+    /// steps it is validated with (40 is the model card's full-quality setting); a phone takes about
+    /// a minute per step, so it starts at 10 and stops at 20.
+    static let steps: [String: (mac: StepSettings, phone: StepSettings)] = [
+        zImageTurbo.id: (mac: StepSettings(initial: 8, choices: [4, 8, 16]),
+                         phone: StepSettings(initial: 8, choices: [4, 8, 16])),
+        flux2Klein.id: (mac: StepSettings(initial: 4, choices: [2, 4, 8]),
+                        phone: StepSettings(initial: 4, choices: [2, 4, 8])),
+        qwenImage21.id: (mac: StepSettings(initial: 20, choices: [10, 20, 40]),
+                         phone: StepSettings(initial: 10, choices: [10, 15, 20])),
+    ]
+}
+
+extension DiffusionModel {
+    /// This model's steps on this kind of device. A model missing from the table gets its native
+    /// count with half and double as the other options.
+    func stepSettings(onPhone: Bool) -> StepSettings {
+        if let steps = Catalog.steps[id] { return onPhone ? steps.phone : steps.mac }
         let n = max(2, architecture.defaultSteps)
-        return Array(Set([max(2, n / 2), n, n * 2])).sorted()
+        return StepSettings(initial: n, choices: Array(Set([max(2, n / 2), n, n * 2])).sorted())
     }
 
     /// Render-size options (px). Current models handle this square range; native is the top.
