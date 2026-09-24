@@ -1051,7 +1051,7 @@ final class AppModel {
             // (plural) feeds the macOS resident facade (1-3 references). Size is the effective size, so
             // an iPhone i2i renders 512 even if 1024 is selected.
             // Reference images only feed FLUX, so only FLUX's size depends on them. Guidance is the
-            // model's calibrated value (1.0 for the distilled models, real CFG for Qwen-Image).
+            // model's calibrated value (1.0 for every current model, Qwen-Image 2.1 included).
             let renderSize = model.family == .flux2 ? fluxEffectiveSize : size
             let request = GenerationRequest(prompt: prompt, steps: steps,
                                             guidance: model.architecture.defaultGuidance, seed: seed,

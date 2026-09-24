@@ -65,7 +65,7 @@ final class RealModelTests: XCTestCase {
     }
 
     private static func request(steps: Int, control: GenerationControl? = nil) -> GenerationRequest {
-        GenerationRequest(prompt: "a red apple on a wooden table", steps: steps, guidance: 6, seed: 3,
+        GenerationRequest(prompt: "a red apple on a wooden table", steps: steps, guidance: 1, seed: 3,
                           size: ImageSize(width: 256, height: 256), control: control)
     }
 
@@ -80,7 +80,7 @@ final class RealModelTests: XCTestCase {
         summary: "", license: .other(name: "Qwen Research", commercialUse: false),
         architecture: ArchitectureSpec(family: .qwenImage, latentChannels: 64,
                                        defaultSampler: .flowMatchEuler, defaultSteps: 20,
-                                       defaultGuidance: 6),
+                                       defaultGuidance: 1),
         variants: [ModelVariant(precision: .q4, approximateBytes: 1,
                                 components: ComponentSizes(transformer: 1, textEncoder: 1, vae: 1),
                                 layout: .flatSingle,

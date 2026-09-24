@@ -54,10 +54,11 @@ enum Catalog {
         publisher: "Qwen (Alibaba)",
         summary: "GGUF on stable-diffusion.cpp, Qwen3-VL-8B encoder",
         license: .other(name: "Qwen Research", commercialUse: false),
-        // Not distilled: 20 steps with classifier-free guidance, the settings stable-diffusion.cpp
-        // and the GGUF publisher validate the model with.
+        // Sampled without classifier-free guidance, as the reference pipeline does (diffusers'
+        // QwenImage21Pipeline defaults true_cfg_scale to 1.0), so each step is one denoiser pass.
+        // Guidance 6 halves the speed and, at 10 steps, turns the image blotchy and speckled.
         architecture: ArchitectureSpec(family: .qwenImage, latentChannels: 64,
-            defaultSampler: .flowMatchEuler, defaultSteps: 20, defaultGuidance: 6.0),
+            defaultSampler: .flowMatchEuler, defaultSteps: 20, defaultGuidance: 1.0),
         variants: [ModelVariant(precision: .q4, approximateBytes: 10_023_774_200,
             components: ComponentSizes(transformer: 4_199_565_024, textEncoder: 5_148_699_488, vae: 675_509_688),
             layout: .flatSingle,
