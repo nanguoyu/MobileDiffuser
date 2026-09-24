@@ -36,14 +36,25 @@ public actor SDCppDiffusionEngine: DiffusionEngine {
     }
 
     /// How a render of `size` fits `device`, phase by phase (see `SDCppMemoryPlan`), with the decode
-    /// tiled when the engine would tile it.
+    /// tiled and the GPU budget set the way the engine would run it there.
     public static func capabilities(for model: DiffusionModel, variant: ModelVariant,
                                     on device: DeviceTier, size: ImageSize) -> EngineCapabilities {
         let c = variant.components
+        let tiled = SDCppMemoryPlan.shouldTile(size, on: device)
         return SDCppMemoryPlan(textEncoder: c.textEncoder, transformer: c.transformer, vae: c.vae, size: size,
-                               tiledDecode: SDCppMemoryPlan.shouldTile(size, on: device))
+                               decodeTile: tiled ? SDCppMemoryPlan.decodeTile(on: device) : nil,
+                               gpuBudget: defaultGPUBudgetGiB(on: device).map { Int64($0 * 1_073_741_824) })
             .capabilities(on: device)
     }
+
+    /// A phone's GPU shares its RAM with the whole system and the buffers sd.cpp keeps resident are
+    /// wired, so there sd.cpp is held to 30% of the RAM: it then runs larger components in segments,
+    /// reading their weights as it goes. On a Mac it sizes itself.
+    static func defaultGPUBudgetGiB(on device: DeviceTier) -> Double? {
+        device.isPhone ? Double(device.physicalMemoryBytes) * 0.3 / 1_073_741_824 : nil
+    }
+
+    private var gpuBudgetGiB: Double? { options.gpuBudgetGiB ?? Self.defaultGPUBudgetGiB(on: .current) }
 
     public func load(_ model: DiffusionModel,
                      variant: ModelVariant,
@@ -54,7 +65,7 @@ public actor SDCppDiffusionEngine: DiffusionEngine {
             throw SDCppError.missingFile(url.lastPathComponent)
         }
         SDLog.installIfNeeded()
-        let files = self.files, options = self.options
+        let files = self.files, options = self.options, gpuBudgetGiB = self.gpuBudgetGiB
         let handle = try await Self.onSDQueue { () throws -> SDContextHandle in
             let relay = ProgressRelay(onLoad: progress)
             let strings = CStringPool()
@@ -74,7 +85,7 @@ public actor SDCppDiffusionEngine: DiffusionEngine {
                 params.enable_mmap = options.memoryMapWeights
                 params.flash_attn = options.flashAttention
                 params.diffusion_flash_attn = options.flashAttention
-                if let gib = options.gpuBudgetGiB {
+                if let gib = gpuBudgetGiB {
                     params.max_vram = strings.make(String(format: "%.2f", gib))
                 }
                 // sd.cpp copies every path into its own storage, so the pool can go once this returns.
@@ -105,11 +116,14 @@ public actor SDCppDiffusionEngine: DiffusionEngine {
             guard let input = SDInputImage(image) else { throw SDCppError.unreadableImage }
             return input
         }
-        let tiledDecode = options.tiledVAEDecode ?? SDCppMemoryPlan.shouldTile(request.size, on: .current)
+        let device = DeviceTier.current
+        let tiledDecode = options.tiledVAEDecode ?? SDCppMemoryPlan.shouldTile(request.size, on: device)
+        let decodeTile = tiledDecode ? SDCppMemoryPlan.decodeTile(on: device) : nil
         #if os(iOS)
         // On iOS running out of memory ends the app, so a render that cannot fit is refused up front.
-        guard SDCppMemoryPlan(files: files, size: request.size, tiledDecode: tiledDecode)
-            .capabilities(on: .current).runnable else { throw EngineError.unsupportedOnDevice }
+        guard SDCppMemoryPlan(files: files, size: request.size, decodeTile: decodeTile,
+                              gpuBudget: gpuBudgetGiB.map { Int64($0 * 1_073_741_824) })
+            .capabilities(on: device).runnable else { throw EngineError.unsupportedOnDevice }
         #endif
         let relay = ProgressRelay(onGenerate: progress, steps: request.steps, control: request.control) {
             sd_cancel_generation(context.raw, SD_CANCEL_ALL)
@@ -142,7 +156,11 @@ public actor SDCppDiffusionEngine: DiffusionEngine {
                     params.sample_params.sample_steps = Int32(request.steps)
                     // 1.0 means guidance-free: sd.cpp then skips the unconditional pass entirely.
                     params.sample_params.guidance.txt_cfg = request.guidance
-                    params.vae_tiling_params.enabled = tiledDecode
+                    params.vae_tiling_params.enabled = decodeTile != nil
+                    if let decodeTile {
+                        params.vae_tiling_params.tile_size_x = Int32(decodeTile)
+                        params.vae_tiling_params.tile_size_y = Int32(decodeTile)
+                    }
 
                     var images: UnsafeMutablePointer<sd_image_t>?
                     var count: Int32 = 0

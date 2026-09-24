@@ -169,18 +169,38 @@ final class MemoryPlanTests: XCTestCase {
     private let square512 = ImageSize(width: 512, height: 512)
 
     /// Q4_K_M denoiser, UD-Q4_K_XL encoder, bf16 VAE.
-    private func plan(_ size: ImageSize, tiled: Bool) -> SDCppMemoryPlan {
+    private func plan(_ size: ImageSize, tile: Int? = nil, budget: Int64? = nil) -> SDCppMemoryPlan {
         SDCppMemoryPlan(textEncoder: 5_148_699_488, transformer: 4_199_565_024, vae: 675_509_688,
-                        size: size, tiledDecode: tiled)
+                        size: size, decodeTile: tile, gpuBudget: budget)
+    }
+
+    /// The plan the engine would run on `device`.
+    private func caps(_ device: DeviceTier, _ size: ImageSize) -> EngineCapabilities {
+        let tile = SDCppMemoryPlan.shouldTile(size, on: device) ? SDCppMemoryPlan.decodeTile(on: device) : nil
+        let budget = SDCppDiffusionEngine.defaultGPUBudgetGiB(on: device).map { Int64($0 * 1_073_741_824) }
+        return plan(size, tile: tile, budget: budget).capabilities(on: device)
     }
 
     func testPeakIsTheLargestPhaseNotTheSumOfWeights() {
-        let small = plan(square512, tiled: false)
-        XCTAssertEqual(small.peak, 5_148_699_488, "at 512 the text encoder phase dominates")
-        let large = plan(.square1024, tiled: false)
+        XCTAssertEqual(plan(square512).peak, 5_148_699_488, "at 512 the text encoder phase dominates")
+        let large = plan(.square1024)
         XCTAssertEqual(large.peak, 675_509_688 + SDCppMemoryPlan.untiledDecodeWorkspace(.square1024),
                        "an untiled 1024 decode dominates")
-        XCTAssertLessThan(plan(.square1024, tiled: true).peak, large.peak)
+        XCTAssertLessThan(plan(.square1024, tile: 32).peak, large.peak)
+    }
+
+    func testSmallerTilesShrinkTheDecodeWorkspace() {
+        XCTAssertEqual(plan(square512, tile: 32).decodeWorkspace, SDCppMemoryPlan.untiledDecodeWorkspace(square512),
+                       "one 512 px tile covers a 512 px image")
+        XCTAssertEqual(plan(square512, tile: 16).decodeWorkspace * 4,
+                       SDCppMemoryPlan.untiledDecodeWorkspace(square512), accuracy: 4)
+    }
+
+    func testTheGPUBudgetCapsWhatStaysResident() {
+        let budget: Int64 = 2_500_000_000
+        let streamed = plan(.square1024, tile: 16, budget: budget)
+        XCTAssertEqual(streamed.peak, budget + streamed.denoiseWorkspace, "the denoiser runs in segments")
+        XCTAssertLessThan(streamed.peak, plan(.square1024, tile: 16).peak)
     }
 
     func testTilingIsKeptForRendersThatNeedIt() {
@@ -191,12 +211,11 @@ final class MemoryPlanTests: XCTestCase {
     }
 
     func testFitFollowsTheDevice() {
-        let caps = { (device: DeviceTier, size: ImageSize) in
-            self.plan(size, tiled: SDCppMemoryPlan.shouldTile(size, on: device)).capabilities(on: device)
-        }
         XCTAssertTrue(caps(mac32, .square1024).runnable)
         XCTAssertTrue(caps(mac16, .square1024).runnable)
-        XCTAssertFalse(caps(phone8, square512).runnable, "the 5 GB encoder alone is past a phone's budget")
+        XCTAssertTrue(caps(phone8, square512).runnable, "a phone runs it in segments under its GPU budget")
+        XCTAssertFalse(plan(square512, tile: 16).capabilities(on: phone8).runnable,
+                       "held resident, the 5 GB encoder alone is past a phone's budget")
     }
 }
 

@@ -34,9 +34,10 @@ public struct SDCppOptions: Sendable, Hashable {
     /// file-backed, so iOS can reclaim them under pressure instead of terminating the app.
     public var memoryMapWeights: Bool
     public var flashAttention: Bool
-    /// Upper bound, in GiB, for the weights and buffers sd.cpp keeps on the GPU. When set, sd.cpp
-    /// splits the graph and prefetches the next segment's weights to stay inside it. `nil` lets
-    /// sd.cpp size itself from the memory that is free when the model loads.
+    /// Upper bound, in GiB, for the weights and buffers sd.cpp keeps on the GPU. When a component
+    /// does not fit, sd.cpp runs it in segments and prefetches the next segment's weights. `nil` uses
+    /// the engine's default for the device: 30% of the RAM on a phone, and on a Mac whatever sd.cpp
+    /// sizes itself from the memory that is free when the model loads.
     public var gpuBudgetGiB: Double?
     /// Decode the latent in tiles: slower, but the decoder's workspace stays that of one tile. `nil`
     /// tiles only the renders whose untiled decode would take a large share of the device's memory.
